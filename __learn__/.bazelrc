@@ -1,0 +1,32 @@
+# TF Bazel config - group and simplify TF build options
+#
+# ==CONFIG==
+# Android options:
+#   android:
+#   android_arm:
+#   android_arm64:
+#   android_x86:
+#   android_x86_64:
+#
+# iOS options:
+#   ios:
+#   ios_armv7:
+#   ios_arm64:
+#   ios_i386:
+#   ios_x86_64:
+#   ios_fat:
+#
+# macos options
+#   darwin_arm64:
+#
+# compiler options:
+#   cuda_clang:         Use clang for building CUDA code
+#   avx_linux:          Linux avx instruction set build
+#   avx2_linux:         Linux avx2 instruction set build
+#   native_arch_linux:  Linux host machine available instruction sets-based build
+#   avx_win:            Windows avx instruction set build
+#   avx2_win:           Windows avx2 instruction set build
+#
+# 
+
+
