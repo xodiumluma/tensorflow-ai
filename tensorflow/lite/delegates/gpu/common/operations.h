@@ -97,6 +97,7 @@ enum class OperationType {
   SELECT,
   SELECT_V2,
   SIGMOID,
+  SIGN,
   SIN,
   SLICE,
   SOFTMAX,
@@ -123,7 +124,6 @@ using TensorOrScalarBase = std::variant<std::monostate, Tensor<HWC, DataTypeT>,
 using TensorOrScalar = TensorOrScalarBase<DataType::FLOAT32, float>;
 
 struct Padding2D {
-  Padding2D& operator=(const Padding2D& value);
   bool operator==(const Padding2D& value) const;
   bool operator!=(const Padding2D& value) const;
   Padding2D& operator-(const Padding2D& value);
@@ -136,8 +136,6 @@ struct Padding2D {
 };
 
 struct Padding3D {
-  Padding3D() = default;
-  Padding3D& operator=(const Padding3D& value);
   bool operator==(const Padding3D& value);
   bool operator!=(const Padding3D& value);
   Padding3D& operator-(const Padding3D& value);

@@ -1037,6 +1037,7 @@ xla_test(
         "//tensorflow/compiler/xla:array2d",
         "//tensorflow/compiler/xla:reference_util",
         "//tensorflow/compiler/xla:shape_util",
+        "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/client:local_client",
         "//tensorflow/compiler/xla/client:xla_builder",
@@ -1863,9 +1864,13 @@ xla_test(
     name = "prng_test",
     timeout = "long",
     srcs = ["prng_test.cc"],
-    shard_count = 6,
+    shard_count = 20,
     # TODO(b/148276347) The test fails on macOS.
-    tags = ["nomac"],
+    tags = [
+        "noasan",
+        "nomac",
+        "nosan",
+    ],
     deps = [
         ":test_macros_header",
         "//tensorflow/compiler/xla:literal",

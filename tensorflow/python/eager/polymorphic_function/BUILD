@@ -96,7 +96,9 @@ py_library(
     deps = [
         ":attributes",
         ":compiler_ir",
+        ":eager_function_run",
         ":function_spec",
+        "//tensorflow/python:cond",
         "//tensorflow/python:cond_v2",  # TODO(b/118513001): Imported via control_flow_ops; remove.
         "//tensorflow/python:control_flow_ops",
         "//tensorflow/python:control_flow_util",
@@ -129,6 +131,7 @@ cuda_py_test(
         ":polymorphic_function",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:clip_ops",
+        "//tensorflow/python:cond",
         "//tensorflow/python:constant_op",
         "//tensorflow/python:control_flow_assert",
         "//tensorflow/python:data_flow_ops",
@@ -202,6 +205,7 @@ tf_xla_py_test(
         "//tensorflow/compiler/tests:xla_test",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:collective_ops",
+        "//tensorflow/python:cond",
         "//tensorflow/python:constant_op",
         "//tensorflow/python:control_flow_assert",
         "//tensorflow/python:framework_ops",
@@ -242,6 +246,7 @@ cuda_py_test(
     shard_count = 5,
     deps = [
         ":polymorphic_function",
+        "//tensorflow/python:cond",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python:while_loop",
@@ -259,6 +264,7 @@ py_library(
     visibility = ["//tensorflow/python/eager:__pkg__"],
     deps = [
         ":atomic_function",
+        ":eager_function_run",
         ":tracing_compiler",
     ],
 )
@@ -344,10 +350,19 @@ cuda_py_test(
 )
 
 py_library(
+    name = "eager_function_run",
+    srcs = ["eager_function_run.py"],
+    visibility = ["//tensorflow:internal"],
+    deps = ["//tensorflow/python/util:tf_export"],
+)
+
+py_library(
     name = "function_context",
     srcs = ["function_context.py"],
     srcs_version = "PY3",
-    visibility = ["//tensorflow:internal"],
+    visibility = [
+        "//visibility:private",  # Only private by automation, not intent. Owner may accept CLs adding visibility. See go/scheuklappen#explicit-private.
+    ],
     deps = [
         "//tensorflow/core/function/polymorphism:function_cache",
         "//tensorflow/core/function/trace_type",
@@ -436,6 +451,7 @@ tf_xla_py_test(
     srcs = ["compiler_ir_test.py"],
     disabled_backends = [
         "cpu_ondemand",
+        "gpu_a100",
     ],
     enable_mlir_bridge = True,
     python_version = "PY3",

@@ -166,6 +166,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/spmd/stateful_rng_spmd_partitioner.h"
 #include "tensorflow/compiler/xla/service/stable_sort_expander.h"
 #include "tensorflow/compiler/xla/service/stochastic_convert_decomposer.h"
+#include "tensorflow/compiler/xla/service/topk_rewriter.h"
 #include "tensorflow/compiler/xla/service/transpose_folding.h"
 #include "tensorflow/compiler/xla/service/tuple_simplifier.h"
 #include "tensorflow/compiler/xla/service/while_loop_all_reduce_code_motion.h"
@@ -189,6 +190,7 @@ limitations under the License.
 #include "tensorflow/tsl/platform/blocking_counter.h"
 #include "tensorflow/tsl/platform/casts.h"
 #include "tensorflow/tsl/platform/env.h"
+#include "tensorflow/tsl/platform/errors.h"
 #include "tensorflow/tsl/platform/logging.h"
 #include "tensorflow/tsl/platform/status.h"
 #include "tensorflow/tsl/platform/statusor.h"
@@ -381,11 +383,6 @@ Status GpuCompiler::OptimizeHloModule(
   layout_insensitive_algsimp_opts.set_minmax_propagate_nan(
       !debug_options.xla_gpu_enable_fast_min_max());
 
-  layout_insensitive_algsimp_opts.set_enable_normalize_broadcast_operand(false);
-
-  // GPU benefits from having concats as early as possible.
-  layout_insensitive_algsimp_opts.set_push_concat_to_consumers(false);
-
   if (gpu_target_config.platform_name == "ROCM") {
     layout_insensitive_algsimp_opts.set_enable_conv_operand_swap(false);
   }
@@ -403,6 +400,10 @@ Status GpuCompiler::OptimizeHloModule(
     spmd_pipeline.AddPass<CallInliner>();
     spmd_pipeline.AddPass<ZeroSizedHloElimination>();
     spmd_pipeline.AddPass<ConditionalCanonicalizer>();
+    spmd_pipeline.AddPass<TopkRewriter>(
+        // We're only rewriting TopK to prevent SPMD partitioning from blowing
+        // it up. Always allow it.
+        [](const HloSortInstruction*, int64_t) { return true; });
 
     HloPassPipeline& spmd_simplify =
         spmd_pipeline.AddPass<HloPassFix<HloPassPipeline>>("spmd-simplify");
@@ -444,6 +445,7 @@ Status GpuCompiler::OptimizeHloModule(
   {
     HloPassPipeline pipeline("optimization");
     AddHloVerifier(&pipeline);
+    pipeline.AddPass<TopkDecomposer>();
     pipeline.AddPass<AllToAllDecomposer>();
 
     HloPredicate upcaster_filter = [&](const HloInstruction* instr) {
@@ -637,7 +639,11 @@ Status GpuCompiler::OptimizeHloModule(
   if (stream_exec != nullptr) {
     gpu_version = GetGpuVersion(stream_exec);
     se::dnn::DnnSupport* dnn = stream_exec->AsDnn();
-    TF_RET_CHECK(dnn != nullptr);
+    if (dnn == nullptr) {
+      return tsl::errors::FailedPrecondition(
+          "DNN library initialization failed."
+          " Look at the errors above for more details.");
+    }
     TF_ASSIGN_OR_RETURN(dnn_version, dnn->GetVersion());
   }
 

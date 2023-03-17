@@ -189,7 +189,7 @@ void CreateTfJitRtPipeline(OpPassManager& pm,
 
   if (options.vectorize) {
     pm.addNestedPass<FuncOp>(mlir::gml_st::createVectorizeCopyPass());
-    pm.addNestedPass<FuncOp>(mlir::gml_st::createSimplifyDeadCopyPass());
+    pm.addNestedPass<FuncOp>(mlir::gml_st::createNaiveCopyRemovalPass());
   }
 
   // Deallocate all temporary buffers.
@@ -200,9 +200,6 @@ void CreateTfJitRtPipeline(OpPassManager& pm,
 
   // Remove trivial copy operations.
   pm.addNestedPass<FuncOp>(CreateLinalgTrivialCopyRemovalPass());
-
-  if (options.vectorize)
-    pm.addNestedPass<FuncOp>(mlir::gml_st::createGmlStToScfPass());
 
   pm.addPass(mlir::createBufferizationToMemRefPass());
   pm.addPass(mlir::createCSEPass());

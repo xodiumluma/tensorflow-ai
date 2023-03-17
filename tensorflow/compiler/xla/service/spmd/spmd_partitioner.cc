@@ -40,6 +40,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/hlo/ir/hlo_instructions.h"
 #include "tensorflow/compiler/xla/hlo/ir/hlo_opcode.h"
 #include "tensorflow/compiler/xla/hlo/ir/hlo_sharding.h"
+#include "tensorflow/compiler/xla/hlo/utils/hlo_sharding_util.h"
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/protobuf_util.h"
 #include "tensorflow/compiler/xla/service/flatten_call_graph.h"
@@ -47,7 +48,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_dce.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_pipeline.h"
 #include "tensorflow/compiler/xla/service/hlo_query.h"
-#include "tensorflow/compiler/xla/service/hlo_sharding_util.h"
 #include "tensorflow/compiler/xla/service/pattern_matcher.h"
 #include "tensorflow/compiler/xla/service/shape_inference.h"
 #include "tensorflow/compiler/xla/service/spmd/custom_call_handler.h"
@@ -388,6 +388,15 @@ PartitionedHlo PartitionedHlo::Reshard(const HloSharding& target,
                                        std::optional<Literal> pad_value) {
   if (sharding() == target) {
     return *this;
+  }
+  // Handling for constant resharding from non-manual sharding to manual.
+  // (This could happen for Tuple, While, etc. since manual sharding is not
+  // propagated to constant.)
+  if (hlo()->opcode() == HloOpcode::kConstant && !sharding().IsManual() &&
+      target.IsManual()) {
+    PartitionedHlo pconstant = this->Reshard(HloSharding::Replicate());
+    pconstant.hlo()->set_sharding(target);
+    return pconstant;
   }
   auto& cache = state_.reshard_cache->per_hlo_cache[hlo()].reshard_cache;
   // Replace existing reshard cache for target if we are sharding with new
@@ -1821,7 +1830,8 @@ PatternMatchMergeSharding(const Shape& shape, const HloSharding& source,
 // - int: Dimension in the input that is going to be the destination of the
 // unmerged dimension.
 std::optional<std::tuple<HloSharding, HloSharding, int, int>>
-PatternMatchUnmergeSharding(const Shape& shape, const HloSharding& source,
+PatternMatchUnmergeSharding(const Shape& shape, const Shape& base_shape,
+                            const HloSharding& source,
                             const HloSharding& target) {
   if (!source.IsTiled() || !target.IsTiled()) {
     return std::nullopt;
@@ -1838,6 +1848,7 @@ PatternMatchUnmergeSharding(const Shape& shape, const HloSharding& source,
   for (int i = 0; i < target.TiledDataRank(); ++i) {
     if (source.tile_assignment().dim(i) > target.tile_assignment().dim(i) &&
         target.tile_assignment().dim(i) != 1 &&
+        base_shape.dimensions(i) % source.tile_assignment().dim(i) == 0 &&
         source.tile_assignment().dim(i) % target.tile_assignment().dim(i) ==
             0) {
       const int64_t dimension_size =
@@ -1854,15 +1865,6 @@ PatternMatchUnmergeSharding(const Shape& shape, const HloSharding& source,
                    << " src size: " << source.tile_assignment().dim(i)
                    << " target size: "
                    << target.tile_assignment().dim(target_dim);
-          return std::nullopt;
-        }
-        // Do not consider if it requires additional padding.
-        if (shape.dimensions(target_dim) %
-                target.tile_assignment().dim(target_dim) !=
-            0) {
-          VLOG(10) << "Skipped for target shape dimension not being divisible "
-                      "by additional target sharding dim:"
-                   << target_dim;
           return std::nullopt;
         }
         return hlo_sharding_util::SplitShardingDimension(
@@ -2034,13 +2036,14 @@ std::optional<PartitionedHlo> PartitionedHlo::TryComplexReshardHandling(
     }
     return reshaped;
   }
-  if (auto reshape = PatternMatchUnmergeSharding(this->hlo()->shape(),
-                                                 sharding(), target)) {
+  if (auto reshape = PatternMatchUnmergeSharding(
+          this->hlo()->shape(), this->base_shape(), sharding(), target)) {
     auto& [before_sharding, new_reshaped_sharding, source_dim, target_dim] =
         *reshape;
     VLOG(10) << "Matched \"unmerge_sharding()\": "
              << new_reshaped_sharding.ToString();
     VLOG(10) << "Original shape: " << hlo()->shape().ToString();
+    VLOG(10) << "Base shape: " << base_shape().ToString();
     PartitionedHlo reshaped = SplitReshapeHelper(
         *this, source_dim, this->hlo()->shape().dimensions(source_dim),
         before_sharding);

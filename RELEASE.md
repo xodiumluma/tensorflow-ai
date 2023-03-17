@@ -7,18 +7,17 @@
 
 *  `tf.keras`
 
-    *  Remove the Keras scikit-learn API wrappers (`KerasClassifier` and
+    *  Removed the Keras scikit-learn API wrappers (`KerasClassifier` and
        `KerasRegressor`), which had been deprecated in August 2021.
        We recommend using [SciKeras](https://github.com/adriangb/scikeras)
        instead.
-
-*   The default Keras model saving format is now the Keras v3 format:
-    calling `model.save("xyz.keras")` will no longer create a H5 file,
-    it will create a native Keras model file.
-    This will only be breaking for you if you were manually inspecting or
-    modifying H5 files saved by Keras under a `.keras` extension.
-    If this breaks you, simply add `save_format="h5"` to your `.save()` call
-    to revert back to the prior behavior.
+    *  The default Keras model saving format is now the Keras v3 format:
+       calling `model.save("xyz.keras")` will no longer create a H5 file,
+       it will create a native Keras model file.
+       This will only be breaking for you if you were manually inspecting or
+       modifying H5 files saved by Keras under a `.keras` extension.
+       If this breaks you, simply add `save_format="h5"` to your `.save()` call
+       to revert back to the prior behavior.
 
 * The LMDB kernels have been changed to return an error. This is in preparation
   for completely removing them from TensorFlow. The LMDB dependency that these
@@ -44,7 +43,8 @@
     *   Add 16-bit int type support for built-in op `less`, `greater_than`,
         `equal`
     *   Add 8-bit and 16-bit support for `floor_div` and `floor_mod`.
-    *   Add int16 indices support for built-in op `gather`.
+    *   Add int16 indices support for built-in op `gather` and `gather_nd`.
+    *   Add reference implementation for 16-bit int unquantized `add`.
 
 *   `tf.keras`
 
@@ -56,6 +56,7 @@
         graph). This can be used for integrating metrics from external Python
         libraries (like sklearn or pycocotools) into Keras as first-class Keras
         metrics.
+    *   Added `tf.keras.optimizers.Lion` optimizer.
     *   The `SidecarEvaluatorModelExport` callback has been added to Keras as
         `keras.callbacks.SidecarEvaluatorModelExport`. This callback allows for
         exporting the model the best-scoring model as evaluated by a
@@ -66,6 +67,15 @@
         learning rate scheduler. You can now specify an initial and target
         learning rate, and our scheduler will perform a linear interpolation
         between the two after which it will begin a decay phase.
+    *   Added experimental support for an exactly-once visitation guarantee for
+        evaluating Keras models trained with
+        `tf.distribute.ParameterServerStrategy`, via the
+        `exact_evaluation_shards` argument in `Model.fit` and `Model.evaluate`.
+    *   Added `tf.keras.__internal__.KerasTensor`,
+        `tf.keras.__internal__.SparseKerasTensor`, and
+        `tf.keras.__internal__.RaggedKerasTensor` classes. You can use these
+        classes to do instance type checking and type annotations for
+        layer/model inputs and outputs.
 
 *   `tf.function`:
 
@@ -83,6 +93,15 @@
         `tf.nn.embedding_lookup_sparse` and
         `tf.nn.safe_embedding_lookup_sparse`, which enables a simplified and
         typically faster lookup procedure.
+
+*   `tf.SavedModel`
+
+    *   Introduce class method
+        `tf.saved_model.experimental.Fingerprint.from_proto(proto)`, which can
+        be used to construct a `Fingerprint` object directly from a protobuf.
+    *   Introduce member method
+        `tf.saved_model.experimental.Fingerprint.singleprint()`, which provides
+        a convenient way to uniquely identify a SavedModel.
 
 ## Bug Fixes and Other Changes
 
@@ -102,7 +121,9 @@
     *   Deprecated `dtensor.run_on` in favor of `dtensor.default_mesh` to
         correctly indicate that the context does not override the mesh that the
         ops and functions will run on, it only sets a fallback default mesh.
-
+    *   List of members of dtensor.Layout and dtensor.Mesh have slightly changed
+        as part of efforts to consolidate the C++ and Python source
+        code with pybind11. Most notably, Layout.serialized_string is removed.
 
 ## Thanks to our Contributors
 

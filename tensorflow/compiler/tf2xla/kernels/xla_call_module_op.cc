@@ -32,7 +32,9 @@ limitations under the License.
 #include "mlir/Support/DebugStringHelper.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "stablehlo/dialect/ChloOps.h"  // from @stablehlo
+#include "stablehlo/dialect/Serialization.h"  // from @stablehlo
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
+#include "stablehlo/dialect/VhloOps.h"  // from @stablehlo
 #include "stablehlo/transforms/Passes.h"  // from @stablehlo
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -52,10 +54,14 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-// Version 1 uses MHLO, starting with version 2 use StableHLO.
+// Version 1 used MHLO & CHLO, not supported anymore.
+// Version 2 supports StableHLO & CHLO. From 10/2022. Minimum from 03/2023.
 const int VERSION_START_STABLE_HLO = 2;
-// Version 3 supports platform checking and multiple platforms
+// Version 3 supports platform checking and multiple platforms. From 02/2023.
 const int VERSION_START_PLATFORMS = 3;
+// Version 4 supports StableHLO with compatibility guarantees. From 03/2023
+const int VERSION_START_STABLE_HLO_COMPATIBILITY = 4;
+const int VERSION_MINIMUM_SUPPORTED = VERSION_START_STABLE_HLO;
 
 // Computes a dimension value from the dim_arg specification.
 // The specification is of the form "<arg_idx>.<arg_axis_idx>".
@@ -92,22 +98,12 @@ StatusOr<mlir::Value> ComputeDimensionValue(int version, string dim_arg_spec,
   mlir::Value val;
   mlir::Type get_dim_type =
       mlir::RankedTensorType::get({}, op_builder.getI32Type());
-  if (version >= VERSION_START_STABLE_HLO) {
-    val = op_builder.create<mlir::stablehlo::GetDimensionSizeOp>(
-        arguments[arg_idx].getLoc(), get_dim_type, arguments[arg_idx],
-        op_builder.getI64IntegerAttr(arg_axis_idx));
-    if (dim_arg_type != get_dim_type) {
-      val = op_builder.create<mlir::stablehlo::ConvertOp>(
-          arguments[arg_idx].getLoc(), dim_arg_type, val);
-    }
-  } else {
-    val = op_builder.create<mlir::mhlo::GetDimensionSizeOp>(
-        arguments[arg_idx].getLoc(), get_dim_type, arguments[arg_idx],
-        op_builder.getI64IntegerAttr(arg_axis_idx));
-    if (dim_arg_type != get_dim_type) {
-      val = op_builder.create<mlir::mhlo::ConvertOp>(
-          arguments[arg_idx].getLoc(), dim_arg_type, val);
-    }
+  val = op_builder.create<mlir::stablehlo::GetDimensionSizeOp>(
+      arguments[arg_idx].getLoc(), get_dim_type, arguments[arg_idx],
+      op_builder.getI64IntegerAttr(arg_axis_idx));
+  if (dim_arg_type != get_dim_type) {
+    val = op_builder.create<mlir::stablehlo::ConvertOp>(
+        arguments[arg_idx].getLoc(), dim_arg_type, val);
   }
   return val;
 }
@@ -359,9 +355,14 @@ Status LoadAndPreprocessModule(int version,
   context->loadDialect<mlir::stablehlo::StablehloDialect>();
   context->loadDialect<mlir::mhlo::MhloDialect>();
   context->loadDialect<mlir::chlo::ChloDialect>();
+  context->loadDialect<mlir::vhlo::VhloDialect>();
   // Parses both IR text and bytecode.
-  *module = mlir::parseSourceString<mlir::ModuleOp>(llvm::StringRef(module_str),
-                                                    context);
+  if (version >= VERSION_START_STABLE_HLO_COMPATIBILITY) {
+    *module = mlir::stablehlo::deserializePortableArtifact(module_str, context);
+  } else {
+    *module = mlir::parseSourceString<mlir::ModuleOp>(module_str, context);
+  }
+
   if (!*module) {
     return errors::InvalidArgument("Cannot deserialize computation");
   }
@@ -436,6 +437,11 @@ class XlaCallModuleOp : public XlaOpKernel {
  public:
   explicit XlaCallModuleOp(OpKernelConstruction *ctx) : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("version", &version_));
+    OP_REQUIRES(
+        ctx, version_ >= VERSION_MINIMUM_SUPPORTED,
+        errors::InvalidArgument("XlaCallModuleOp with version ", version_,
+                                " is not supported anymore. Must be >= ",
+                                VERSION_MINIMUM_SUPPORTED));
     string module_str;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("module", &module_str));
     std::vector<PartialTensorShape> expected_output_shapes;

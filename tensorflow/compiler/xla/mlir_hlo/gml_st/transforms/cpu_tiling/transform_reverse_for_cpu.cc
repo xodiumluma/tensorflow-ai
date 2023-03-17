@@ -17,6 +17,7 @@ limitations under the License.
 #include <utility>
 
 #include "gml_st/IR/gml_st_ops.h"
+#include "gml_st/transforms/fusion/fusion.h"
 #include "gml_st/transforms/passes.h"
 #include "gml_st/transforms/peeling/peeling.h"
 #include "gml_st/transforms/tiling/tiling.h"
@@ -27,6 +28,7 @@ limitations under the License.
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "thlo/IR/thlo_ops.h"
 
@@ -42,10 +44,9 @@ constexpr llvm::StringRef kReverseTransformedLabel =
 FailureOr<TilingResult> tileReverseAndUpdateResultIfTiled(
     PatternRewriter &rewriter, thlo::ReverseOp &reverseOp,
     ArrayRef<int64_t> tileSizes) {
-  TilingOptions opts;
-  opts.setTileSizeComputationFn(tileSizes);
-  auto tilingResult = tileUsingGmlSt(
-      opts, rewriter, cast<TilingInterface>(reverseOp.getOperation()));
+  auto opts = getSCFTilingOptions(tileSizes);
+  auto tilingResult = tileUsingSCFForallOp(
+      rewriter, cast<TilingInterface>(reverseOp.getOperation()), opts);
 
   if (failed(tilingResult)) return failure();
 
@@ -88,27 +89,26 @@ struct ReverseTransformPattern : public OpRewritePattern<thlo::ReverseOp> {
     int64_t rank = reverseOp.getInput().getType().getRank();
     auto tilingResult = tileReverseAndUpdateResultIfTiled(
         rewriter, reverseOp, getTileSizes(rank, vectorSize, false));
+    setLabel(reverseOp, kReverseTransformedLabel);
 
     // Peel parallel loop.
     auto peelingResult = peelAllLoops(tilingResult->loop, rewriter);
 
-    // If last dim is to be reversed.
-    if (llvm::is_contained(reverseOp.getReverseDimensions(), rank - 1)) {
-      // If we have a remaining loop, we tile this to sizes of 1.
-      for (scf::ForallOp remParLoop : peelingResult.tailLoops) {
-        remParLoop->walk([&](Operation *childOp) {
-          if (isa<thlo::ReverseOp>(childOp)) {
-            auto innerReverseOp = dyn_cast<thlo::ReverseOp>(*childOp);
-            auto secondTiling = tileReverseAndUpdateResultIfTiled(
-                rewriter, innerReverseOp, getTileSizes(rank, vectorSize, true));
-            setLabel(innerReverseOp, kReverseTransformedLabel);
-          }
-        });
-      }
+    // Fold operations in the remainder loops before scalarization. thlo.reverse
+    // will be folded if the last dim is not reversed.
+    for (scf::ForallOp remParLoop : peelingResult.tailLoops) {
+      remParLoop->walk([&](Operation *childOp) {
+        SmallVector<Value> foldValue;
+        if (succeeded(rewriter.tryFold(childOp, foldValue))) {
+          childOp->replaceAllUsesWith(foldValue);
+        }
+      });
     }
 
-    setLabel(reverseOp, kReverseTransformedLabel);
-    return success();
+    // Tile ops in the peeled loop again, to size 1, so they can be
+    // scalarized.
+    return tilePeeledOpsToScalars(rewriter, peelingResult,
+                                  /*fuseFilterFn=*/nullptr);
   }
 
  private:

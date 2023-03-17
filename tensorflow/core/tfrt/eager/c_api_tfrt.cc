@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/tfrt/eager/c_api_tfrt.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -50,7 +51,7 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/public/session_options.h"
-#include "tensorflow/core/runtime_fallback/kernel/kernel_fallback_execute_compat.h"
+#include "tensorflow/core/runtime_fallback/kernel/kernel_fallback_execute_compat_eager.h"
 #include "tensorflow/core/runtime_fallback/runtime/op_logger.h"
 #include "tensorflow/core/runtime_fallback/runtime/runtime_fallback_op_handler.h"
 #include "tensorflow/core/runtime_fallback/runtime/runtime_fallback_tensor.h"
@@ -1100,11 +1101,21 @@ std::vector<std::string> ContextInterface::ListFunctionNames() {
   return GetEagerContext()->ListFunctionNames();
 }
 
+tensorflow::ImmediateExecutionContext::CacheStats
+ContextInterface::GetCacheStats() {
+  return GetEagerContext()->GetCacheStats();
+}
+
 tensorflow::Status ContextInterface::RemoveFunction(const std::string& func) {
   // TODO(tfrt-devs): We need to ensure all invocations of this function is
   // finished before removing it.
   function_cache_.RemoveFunction(func);
   return GetEagerContext()->RemoveFunction(func);
+}
+
+tensorflow::Status ContextInterface::AddRemoveFunctionNotifier(
+    const std::string& func, std::function<void()> notifier) {
+  return GetEagerContext()->AddRemoveFunctionNotifier(func, notifier);
 }
 
 const tensorflow::FunctionDef* ContextInterface::FindFunctionDef(

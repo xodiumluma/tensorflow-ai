@@ -173,11 +173,12 @@ cc_library(
         "//tensorflow/core/data/service:common_proto_cc",
         "//tensorflow/core/data/service:dispatcher_proto_cc",
         "//tensorflow/core/data/service:split_provider",
-        "//tensorflow/core/platform:status",
         "//tensorflow/tsl/platform:env",
         "//tensorflow/tsl/platform:errors",
         "//tensorflow/tsl/platform:status",
+        "//tensorflow/tsl/platform:status_to_from_proto",
         "//tensorflow/tsl/platform:statusor",
+        "//tensorflow/tsl/protobuf:protos_all_cc",
         "@com_google_absl//absl/time",
     ],
 )
@@ -187,6 +188,7 @@ tf_cc_test(
     size = "small",
     srcs = ["snapshot_manager_test.cc"],
     deps = [
+        ":path_utils",
         ":snapshot_manager",
         "//tensorflow/core:framework",
         "//tensorflow/core:test",
@@ -196,7 +198,11 @@ tf_cc_test(
         "//tensorflow/core/data/service:test_util",
         "//tensorflow/core/framework:tensor_proto_cc",
         "//tensorflow/tsl/platform:env",
+        "//tensorflow/tsl/platform:status",
+        "//tensorflow/tsl/platform:status_matchers",
+        "//tensorflow/tsl/platform:status_to_from_proto",
         "//tensorflow/tsl/platform:statusor",
+        "//tensorflow/tsl/protobuf:protos_all_cc",
     ],
 )
 

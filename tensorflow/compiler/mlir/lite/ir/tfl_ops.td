@@ -530,11 +530,12 @@ def TFL_AddOp : TFL_Op<"add", [
   }];
 
   let arguments = (
-    ins TFL_TensorOf<[F32, I32, I64, QI8, QUI8, QI16]>:$lhs,
-    TFL_TensorOf<[F32, I32, I64, QI8, QUI8, QI16]>:$rhs,
+    ins TFL_TensorOf<[F32, I16, I32, I64, QI8, QUI8, QI16]>:$lhs,
+    TFL_TensorOf<[F32, I16, I32, I64, QI8, QUI8, QI16]>:$rhs,
     TFL_AFAttr:$fused_activation_function);
 
-  let results = (outs TFL_TensorOf<[F32, I32, I64, QI8, QUI8, QI16]>:$output);
+  let results = (outs
+    TFL_TensorOf<[F32, I16, I32, I64, QI8, QUI8, QI16]>:$output);
 
   let hasFolder = 1;
 
@@ -1185,7 +1186,7 @@ def TFL_GatherNdOp : TFL_Op<"gather_nd", [
 
   let arguments = (ins
     TFL_TensorOf<[F32, I8, I16, I64, I32, UI8, TFL_Str]>:$params,
-    TFL_I32OrI64Tensor:$indices
+    TFL_TensorOf<[I16, I32, I64]>:$indices
   );
 
   let results = (outs

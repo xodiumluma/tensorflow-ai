@@ -27,6 +27,7 @@ import weakref
 from absl.testing import parameterized
 import numpy
 
+from tensorflow.core.function.capture import capture_container
 from tensorflow.python.autograph.core import ag_ctx
 from tensorflow.python.autograph.core import converter
 from tensorflow.python.autograph.lang import directives
@@ -46,7 +47,6 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import extension_type
-from tensorflow.python.framework import func_graph
 from tensorflow.python.framework import function as tf_function
 from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
@@ -59,11 +59,12 @@ from tensorflow.python.framework import test_util
 from tensorflow.python.framework import type_spec
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import clip_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import cond_v2
 from tensorflow.python.ops import control_flow_assert
-from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import functional_ops
 from tensorflow.python.ops import gen_random_ops
@@ -919,7 +920,7 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
       return n - 1
 
     @polymorphic_function.function(input_signature=signature)
-    def cond(n):
+    def cond_fn(n):
       return n > 0
 
     # Instead of calling the send & recv functions directly we want to call them
@@ -927,9 +928,9 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
     # while boundary.
     @polymorphic_function.function
     def fn(n):
-      functional_ops.While([n], cond.get_concrete_function(),
+      functional_ops.While([n], cond_fn.get_concrete_function(),
                            send_body.get_concrete_function())
-      return functional_ops.While([n], cond.get_concrete_function(),
+      return functional_ops.While([n], cond_fn.get_concrete_function(),
                                   recv_body.get_concrete_function())
 
     # Use a graph context since functions will not be automatically inlined
@@ -1100,7 +1101,7 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
     v = variables.Variable(1.0)
 
     def trivial_function():
-      return control_flow_ops.cond(
+      return cond.cond(
           array_ops.placeholder_with_default(True, ()), v.read_value,
           v.read_value)
 
@@ -1903,10 +1904,10 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
   def testEagerCaptures(self):
     with context.eager_mode():
       large_tensor = array_ops.ones(shape=(256,))
-      self.assertGreater(256, func_graph._EAGER_CONST_THRESHOLD)
+      self.assertGreater(256, capture_container._EAGER_CONST_THRESHOLD)
 
       small_tensor = array_ops.ones(shape=(4,))
-      self.assertLessEqual(4, func_graph._EAGER_CONST_THRESHOLD)
+      self.assertLessEqual(4, capture_container._EAGER_CONST_THRESHOLD)
 
       v = resource_variable_ops.ResourceVariable(0.0)
 
@@ -3100,7 +3101,7 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
     ])
     def f(x, s):
       old_shape = array_ops.shape(x)
-      new_shape = array_ops.stack([old_shape[0], s], axis=0)
+      new_shape = array_ops_stack.stack([old_shape[0], s], axis=0)
       y = array_ops.ones(shape=new_shape, dtype=dtypes.int32)
       return y
 
@@ -3122,8 +3123,8 @@ class FunctionTest(test.TestCase, parameterized.TestCase):
         tensor_spec.TensorSpec((), dtype=dtypes.int32),
     ])
     def f(x, s):
-      s0, _ = array_ops.unstack(array_ops.shape(x), axis=0)
-      new_shape = array_ops.stack([s0, s], axis=0)
+      s0, _ = array_ops_stack.unstack(array_ops.shape(x), axis=0)
+      new_shape = array_ops_stack.stack([s0, s], axis=0)
       y = array_ops.ones(shape=new_shape, dtype=dtypes.int32)
       return y
 

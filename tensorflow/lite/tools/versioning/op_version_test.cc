@@ -440,7 +440,11 @@ TEST(OpVersionTest, VersioningAddTest) {
       .outputs = CreateOpSignatureTensorSpecs(kTfLiteInt16),
       .builtin_data = reinterpret_cast<void*>(&add_params)};
   add_params.pot_scale_int16 = false;
+  fake_op_sig.ext_options.add.input_quantized = true;
   EXPECT_EQ(GetBuiltinOperatorVersion(fake_op_sig), 3);
+
+  fake_op_sig.ext_options.add.input_quantized = false;
+  EXPECT_EQ(GetBuiltinOperatorVersion(fake_op_sig), 5);
 
   SimpleVersioningTest(BuiltinOperator_ADD);
 }
@@ -903,6 +907,13 @@ TEST(OpVersionTest, VersioningGatherNdOperatorTest) {
           std::vector<TfLiteType>{kTfLiteInt16, kTfLiteInt32}),
   };
   EXPECT_EQ(GetBuiltinOperatorVersion(fake_op_sig), 3);
+
+  fake_op_sig = {
+      .op = BuiltinOperator_GATHER_ND,
+      .inputs = CreateOpSignatureTensorSpecs(
+          std::vector<TfLiteType>{kTfLiteInt32, kTfLiteInt16}),
+  };
+  EXPECT_EQ(GetBuiltinOperatorVersion(fake_op_sig), 4);
 }
 TEST(OpVersionTest, VersioningDivTest) {
   OpSignature fake_op_sig = {

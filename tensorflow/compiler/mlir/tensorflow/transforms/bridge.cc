@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <memory>
 #include <string>
-#include <utility>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
@@ -180,7 +179,7 @@ void CreateTPUBridgePipelineImpl(OpPassManager &pm) {
 
   pm.addPass(TFDevice::CreateMarkOpsForOutsideCompilationPass());
   pm.addPass(TFDevice::CreateExtractHeadTailOutsideCompilationPass());
-  pm.addPass(CreateTPUExtractOutsideCompilationPass());
+  pm.addPass(TFDevice::CreateExtractOutsideCompilationPass());
 
   pm.addNestedPass<func::FuncOp>(TFDevice::CreateClusterConstantSinkingPass());
   pm.addPass(TF::CreateResourceDeviceInferencePass());
@@ -193,11 +192,13 @@ void CreateTPUBridgePipelineImpl(OpPassManager &pm) {
   pm.addPass(TFDevice::CreateAnnotateParameterReplicationPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::TF::CreateRewriteTPUEmbeddingOpsPass());
+  pm.addNestedPass<func::FuncOp>(CreateTPUAnnotateDynamicShapeInputsPass());
   pm.addPass(CreateTPURewritePass());
   pm.addPass(createSymbolDCEPass());
   pm.addNestedPass<func::FuncOp>(
       TFDevice::CreateReplicateInvariantOpHoistingPass());
   pm.addPass(CreateTPUMergeVariablesWithExecutePass());
+  pm.addNestedPass<func::FuncOp>(CreateExtractTPUCopyWithDynamicShapeOpPass());
   pm.addNestedPass<func::FuncOp>(
       TF::CreateHoistReplicateInvariantResourceWritesPass());
   pm.addNestedPass<func::FuncOp>(CreateTPUColocateCompositeResourceOps());
@@ -290,9 +291,7 @@ void AddGraphExportLoweringPasses(OpPassManager &pm) {
   pm.addPass(createSymbolDCEPass());
   if (tensorflow::GetMlirCommonFlags()
           ->tf_mlir_enable_convert_control_to_data_outputs_pass) {
-    pm.addPass(tf_executor::CreateTFExecutorConvertControlToDataOutputsPass(
-        tensorflow::GetMlirCommonFlags()
-            ->tf_mlir_enable_coarse_data_token_optimization));
+    pm.addPass(tf_executor::CreateTFExecutorConvertControlToDataOutputsPass());
   }
   pm.addPass(CreateVerifySuitableForExportPass());
 }
@@ -323,9 +322,7 @@ void AddGraphExportLoweringPassesV2(OpPassManager &pm) {
   pm.addPass(createSymbolDCEPass());
   if (tensorflow::GetMlirCommonFlags()
           ->tf_mlir_enable_convert_control_to_data_outputs_pass) {
-    pm.addPass(tf_executor::CreateTFExecutorConvertControlToDataOutputsPass(
-        tensorflow::GetMlirCommonFlags()
-            ->tf_mlir_enable_coarse_data_token_optimization));
+    pm.addPass(tf_executor::CreateTFExecutorConvertControlToDataOutputsPass());
   }
   pm.addPass(CreateVerifySuitableForExportPass());
 }
@@ -394,6 +391,7 @@ void CreateTFXLABridgePipeline(OpPassManager &pm) {
           ->tf_mlir_enable_generic_outside_compilation) {
     pm.addPass(TFDevice::CreateMarkOpsForOutsideCompilationPass());
     pm.addPass(TFDevice::CreateExtractHeadTailOutsideCompilationPass());
+    pm.addPass(TFDevice::CreateExtractOutsideCompilationPass());
   }
   // Rewrite cluster functions into XLA  launch ops.
   pm.addPass(TFDevice::CreateXlaRewritePass());

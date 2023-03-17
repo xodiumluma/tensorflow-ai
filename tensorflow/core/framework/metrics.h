@@ -131,6 +131,13 @@ void RecordTFDataServiceClientIterators(
 void RecordTFDataServiceDataTransferProtocolUsed(
     const string& data_transfer_protocol);
 
+// Records that a tf.data service worker client got an error of non-retriable
+// type `code` with message `error_message` when trying to transfer data over
+// `data_transfer_protocol`.
+void RecordTFDataServiceDataTransferProtocolError(
+    const string& data_transfer_protocol, error::Code code,
+    const string& error_message);
+
 // Records tf.data service cross-trainer cache queries.
 void RecordTFDataServiceCrossTrainerCacheQuery(bool cache_hit);
 
@@ -236,7 +243,8 @@ void UpdateTfMlirBridgeGraphAnalysisPerOp(
     const std::string& unsupported_reason, bool has_unsupported_features);
 
 // Records whether a graph contains any of the TF1 features
-void RecordTFVersionByGraphFeatures(const std::string& device_name,
+void RecordTFVersionByGraphFeatures(const std::string& device,
+                                    const std::string& context,
                                     bool hasControlFlowV1,
                                     bool hasReferenceVariables,
                                     bool hasManualControlDeps);

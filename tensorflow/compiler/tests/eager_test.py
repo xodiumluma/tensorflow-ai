@@ -30,7 +30,7 @@ from tensorflow.python.layers import convolutional
 from tensorflow.python.layers import pooling
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import array_ops_stack  # pylint: disable=g-direct-tensorflow-import
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import functional_ops
 from tensorflow.python.ops import gen_random_ops
@@ -38,6 +38,7 @@ from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import googletest
 from tensorflow.python.training import adam
 
@@ -613,7 +614,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
       def f(start):
         c = lambda x: math_ops.less(x, 13.0)
         b = lambda x: math_ops.add(x, 1.0)
-        return control_flow_ops.while_loop(c, b, [start])
+        return while_loop.while_loop(c, b, [start])
 
       y = f(constant_op.constant(3.0))
     self.assertEqual(13.0, y.numpy())
@@ -636,7 +637,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
       def f(pred, value):
         fn1 = lambda: math_ops.add(value, 1.0)
         fn2 = lambda: math_ops.subtract(value, 1.0)
-        return control_flow_ops.cond(pred, fn1, fn2)
+        return cond.cond(pred, fn1, fn2)
 
       plus_one = f(constant_op.constant(True), constant_op.constant(10.0))
       minus_one = f(constant_op.constant(False), constant_op.constant(10.0))

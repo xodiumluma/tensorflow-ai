@@ -730,6 +730,24 @@ Status AlgebraicSimplifierVisitor::HandleAdd(HloInstruction* add) {
                                           sum_of_constants));
   }
 
+  VLOG(10) << "trying transform [(C1 - A) + C2 => (C1 + C2) - A]";
+  if (Match(add, m::Add(m::Subtract(m::Constant(&c1), m::NonConstant(&a)),
+                        m::Constant(&c2))) ||
+      Match(add, m::Add(m::Subtract(m::Broadcast(m::ConstantScalar(&c1)),
+                                    m::NonConstant(&a)),
+                        m::Broadcast(m::ConstantScalar(&c2))))) {
+    TF_ASSIGN_OR_RETURN(HloInstruction * sum_of_constants,
+                        MakeBinaryHlo(HloOpcode::kAdd, c1, c2));
+    if (ShapeUtil::IsScalar(sum_of_constants->shape()) &&
+        !ShapeUtil::IsScalar(add->shape())) {
+      sum_of_constants = add->AddInstruction(
+          HloInstruction::CreateBroadcast(add->shape(), sum_of_constants, {}));
+    }
+    return ReplaceWithNewInstruction(
+        add, HloInstruction::CreateBinary(add->shape(), HloOpcode::kSubtract,
+                                          sum_of_constants, a));
+  }
+
   // Convert add with fullshape into add with partial shape when a
   // portion of add is effective:
   //             zero (fullshape)   rhs (partialshape)
@@ -3668,8 +3686,7 @@ Status AlgebraicSimplifierVisitor::HandleBroadcast(HloInstruction* broadcast) {
   if (options_.is_layout_sensitive()) {
     return OkStatus();
   }
-  if (options_.enable_normalize_broadcast_operand() &&
-      ShapeUtil::HasDegenerateDimensions(operand->shape())) {
+  if (ShapeUtil::HasDegenerateDimensions(operand->shape())) {
     auto new_operand =
         operand->parent()->AddInstruction(HloInstruction::CreateReshape(
             ShapeUtil::DropDegenerateDimensions(operand->shape()), operand));
@@ -5863,8 +5880,7 @@ Status AlgebraicSimplifierVisitor::HandleReduce(HloInstruction* hlo) {
   //
   // This should make fusion easier or use less memory bandwidth in the unfused
   // case.
-  if (options_.push_concat_to_consumers() &&
-      arg->opcode() == HloOpcode::kConcatenate &&
+  if (arg->opcode() == HloOpcode::kConcatenate &&
       absl::c_linear_search(reduce->dimensions(),
                             arg->concatenate_dimension())) {
     HloInstruction* old_reduce = nullptr;

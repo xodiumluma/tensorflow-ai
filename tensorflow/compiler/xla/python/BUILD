@@ -310,6 +310,7 @@ cc_library(
     features = ["-use_header_modules"],
     deps = [
         ":exceptions",
+        "//tensorflow/compiler/xla/pjrt:lru_cache",
         "//tensorflow/tsl/platform:float8",
         "//tensorflow/tsl/python/lib/core:numpy",
         ":pprof_profile_builder",
@@ -370,6 +371,7 @@ cc_library(
         ":py_client",
         ":python_ref_manager",
         ":traceback",
+        ":util",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla/pjrt:pjrt_client",
@@ -438,8 +440,8 @@ cc_library(
         ":status_casters",
         "//tensorflow/compiler/xla/client:xla_computation",
         "//tensorflow/compiler/xla/hlo/ir:hlo",
+        "//tensorflow/compiler/xla/hlo/utils:hlo_sharding_util",
         "//tensorflow/compiler/xla/service:custom_call_sharding_helper",
-        "//tensorflow/compiler/xla/service:hlo_sharding_util",
         "//tensorflow/compiler/xla/service/spmd:spmd_partitioner",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/synchronization",
@@ -657,6 +659,7 @@ cc_library(
         "@pybind11",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_serialization",
     ],
 )
 

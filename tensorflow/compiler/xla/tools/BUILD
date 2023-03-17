@@ -17,6 +17,7 @@ load(
     "//tensorflow/tsl/platform:build_config.bzl",
     "tf_proto_library",
 )
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -34,6 +35,13 @@ filegroup(
     visibility = ["//tensorflow/compiler/xla:internal"],
 )
 
+build_test(
+    name = "hex_floats_to_packed_literal_build_test",
+    targets = [
+        ":hex_floats_to_packed_literal",
+    ],
+)
+
 xla_cc_binary(
     name = "hex_floats_to_packed_literal",
     srcs = ["hex_floats_to_packed_literal.cc"],
@@ -48,6 +56,13 @@ xla_cc_binary(
         "//tensorflow/tsl/util:command_line_flags",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+build_test(
+    name = "show_signature_build_test",
+    targets = [
+        ":show_signature",
     ],
 )
 
@@ -71,6 +86,13 @@ xla_cc_binary(
     ],
 )
 
+build_test(
+    name = "show_literal_build_test",
+    targets = [
+        ":show_literal",
+    ],
+)
+
 xla_cc_binary(
     name = "show_literal",
     srcs = ["show_literal.cc"],
@@ -82,6 +104,13 @@ xla_cc_binary(
         "//tensorflow/tsl/platform:logging",
         "//tensorflow/tsl/platform:platform_port",
         "//tensorflow/tsl/platform:status",
+    ],
+)
+
+build_test(
+    name = "convert_computation_build_test",
+    targets = [
+        ":convert_computation",
     ],
 )
 
@@ -99,6 +128,13 @@ xla_cc_binary(
     ],
 )
 
+build_test(
+    name = "show_text_literal_build_test",
+    targets = [
+        ":show_text_literal",
+    ],
+)
+
 xla_cc_binary(
     name = "show_text_literal",
     srcs = ["show_text_literal.cc"],
@@ -111,6 +147,13 @@ xla_cc_binary(
         "//tensorflow/tsl/platform:logging",
         "//tensorflow/tsl/platform:platform_port",
         "//tensorflow/tsl/platform:protobuf",
+    ],
+)
+
+build_test(
+    name = "dumped_computation_to_text_build_test",
+    targets = [
+        ":dumped_computation_to_text",
     ],
 )
 
@@ -132,6 +175,13 @@ xla_cc_binary(
         "//tensorflow/tsl/platform:logging",
         "//tensorflow/tsl/platform:platform_port",
         "@com_google_absl//absl/types:span",
+    ],
+)
+
+build_test(
+    name = "dumped_computation_to_operation_list_build_test",
+    targets = [
+        ":dumped_computation_to_operation_list",
     ],
 )
 
@@ -158,6 +208,13 @@ xla_cc_binary(
     ],
 )
 
+build_test(
+    name = "hlo_proto_to_json_build_test",
+    targets = [
+        ":hlo_proto_to_json",
+    ],
+)
+
 xla_cc_binary(
     name = "hlo_proto_to_json",
     srcs = ["hlo_proto_to_json.cc"],
@@ -178,7 +235,7 @@ xla_cc_test(
     srcs = ["hlo_extractor_test.cc"],
     deps = [
         ":hlo_extractor",
-        "//tensorflow/compiler/xla/service:hlo_matchers",
+        "//tensorflow/compiler/xla/hlo/utils:hlo_matchers",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/tsl/platform:test",
@@ -406,9 +463,9 @@ xla_cc_test(
     srcs = ["hlo_control_flow_flattening_test.cc"],
     deps = [
         ":hlo_control_flow_flattening",
+        "//tensorflow/compiler/xla/hlo/utils:hlo_matchers",
         "//tensorflow/compiler/xla/service:collective_ops_utils",
         "//tensorflow/compiler/xla/service:despecializer",
-        "//tensorflow/compiler/xla/service:hlo_matchers",
         "//tensorflow/compiler/xla/service:hlo_verifier",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",  # fixdeps: keep
@@ -425,6 +482,13 @@ cc_library(
     srcs = ["driver.cc"],
     tags = ["nofixdeps"],
     deps = [],
+)
+
+build_test(
+    name = "compute_cost_build_test",
+    targets = [
+        ":compute_cost",
+    ],
 )
 
 xla_cc_binary(

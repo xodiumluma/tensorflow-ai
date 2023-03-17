@@ -208,12 +208,10 @@ class GenPythonOp {
  public:
   GenPythonOp(
       const OpDef& op_def, const ApiDef& api_def, const string& function_name,
-      bool add_type_annotations,
       python_op_gen_internal::GeneratedCodeAnnotator* annotator = nullptr)
       : op_def_(op_def),
         api_def_(api_def),
         function_name_(function_name),
-        add_type_annotations_(add_type_annotations),
         num_outs_(op_def.output_arg_size()),
         annotator_(annotator) {
     op_name_ = function_name_;
@@ -304,7 +302,6 @@ class GenPythonOp {
   const OpDef& op_def_;
   const ApiDef& api_def_;
   const string function_name_;
-  bool add_type_annotations_;
   const int num_outs_;
   python_op_gen_internal::GeneratedCodeAnnotator* annotator_ = nullptr;
 
@@ -336,11 +333,8 @@ class GenPythonOp {
 
 string GetEagerPythonOp(
     const OpDef& op_def, const ApiDef& api_def, const string& function_name,
-    bool add_type_annotations,
     python_op_gen_internal::GeneratedCodeAnnotator* annotator = nullptr) {
-  return GenPythonOp(op_def, api_def, function_name, add_type_annotations,
-                     annotator)
-      .Code();
+  return GenPythonOp(op_def, api_def, function_name, annotator).Code();
 }
 
 bool IsPythonReserved(const string& s) {
@@ -1167,10 +1161,6 @@ string GenPythonOp::Code() {
   }
 
   std::unordered_map<string, string> type_annotations;
-  // Only populate map for allowlisted ops
-  if (add_type_annotations_) {
-    type_annotations = GetTypeAnnotations();
-  }
 
   string parameters;
   // Param can be an input or an attr
@@ -1248,40 +1238,6 @@ string GenPythonOp::Code() {
   }
 
   return prelude_ + result_;
-}
-
-std::unordered_map<string, string> GenPythonOp::GetTypeAnnotations() {
-  std::unordered_map<string, string> type_annotations;
-  // Map attrs to TypeVars
-  for (const auto& attr : op_def_.attr()) {
-    if (attr.type() == "type") {
-      const string type_var_name = "TV_" + op_def_.name() + "_" + attr.name();
-      type_annotations[attr.name()] = type_var_name;
-    } else if (attr.type() == "bool" || attr.type() == "float" ||
-               attr.type() == "int" || attr.type() == "bytes") {
-      type_annotations[attr.name()] = attr.type();
-    } else if (attr.type() == "string") {
-      type_annotations[attr.name()] = "str";
-    }
-  }
-
-  // Map input Tensors to their types
-  for (const auto& arg : op_def_.input_arg()) {
-    // TODO(rahulkamat): Add type annotations to args that accept a sequence of
-    // Tensors
-    if (!arg.type_list_attr().empty()) continue;
-    type_annotations[arg.name()] = GetArgAnnotation(arg, type_annotations);
-  }
-
-  // TODO(rahulkamat): Add type annotations to handle return types of a sequence
-  // of Tensors. Map output Tensor to its type
-  if (op_def_.output_arg_size() == 1) {
-    const auto& arg = op_def_.output_arg(0);
-    if (arg.number_attr().empty() && arg.type_list_attr().empty())
-      type_annotations[arg.name()] = GetArgAnnotation(arg, type_annotations);
-  }
-
-  return type_annotations;
 }
 
 // Generate TypeVars using attrs
@@ -1671,9 +1627,6 @@ bool GenPythonOp::AddEagerFastPathAndGraphCode(
     const string& parameters, const std::vector<string>& output_sizes,
     const string& eager_not_allowed_error,
     const std::unordered_map<string, string>& type_annotations) {
-  if (add_type_annotations_) {
-    GenerateTypeVars(type_annotations);
-  }
   if (api_def_.visibility() == ApiDef::VISIBLE) {
     strings::StrAppend(&result_, "@_dispatch.add_fallback_dispatch_list\n");
     strings::StrAppend(&result_, "@_dispatch.add_type_based_api_dispatcher\n");
@@ -1687,9 +1640,6 @@ bool GenPythonOp::AddEagerFastPathAndGraphCode(
                               /*offset_start =*/result_.length() + 5);
   }
   AddDefLine(function_name_, parameters);
-  if (add_type_annotations_) {
-    AddReturnTypeAnnotation(type_annotations);
-  }
   AddDocStringDescription();
   AddDocStringArgs();
   AddDocStringInputs();
@@ -1730,9 +1680,6 @@ bool GenPythonOp::AddEagerFallbackCode(
   AddDefLine(
       strings::StrCat(function_name_, kEagerFallbackSuffix),
       strings::StrCat(parameters, parameters.empty() ? "" : ", ", "ctx"));
-  if (add_type_annotations_) {
-    AddReturnTypeAnnotation(type_annotations);
-  }
   if (!eager_not_allowed_error.empty()) {
     strings::StrAppend(&result_, "  ", eager_not_allowed_error);
     return true;
@@ -2010,11 +1957,10 @@ void GenPythonOp::AddRawOpExport(const string& parameters) {
                      function_name_, "))\n");
 }
 
-string GetPythonOpsImpl(
-    const OpList& ops, const ApiDefMap& api_defs,
-    const OpRegOffsets& op_reg_offsets, absl::Span<const string> hidden_ops,
-    absl::Span<const string> source_file_list,
-    const std::unordered_set<string>& type_annotate_ops = {}) {
+string GetPythonOpsImpl(const OpList& ops, const ApiDefMap& api_defs,
+                        const OpRegOffsets& op_reg_offsets,
+                        absl::Span<const string> hidden_ops,
+                        absl::Span<const string> source_file_list) {
   python_op_gen_internal::GeneratedCodeAnnotator annotator;
   bool annotate = !op_reg_offsets.offsets().empty();
 
@@ -2098,13 +2044,9 @@ from typing import TypeVar
       continue;
     }
 
-    auto iter = type_annotate_ops.find(op_def.name());
-    bool add_type_annotations = iter != type_annotate_ops.end();
-
-    strings::StrAppend(
-        &result,
-        GetEagerPythonOp(op_def, *api_def, function_name, add_type_annotations,
-                         annotate ? &annotator : nullptr));
+    strings::StrAppend(&result,
+                       GetEagerPythonOp(op_def, *api_def, function_name,
+                                        annotate ? &annotator : nullptr));
     if (annotate) {
       annotator.SetBase(result.length());
     }
@@ -2123,19 +2065,17 @@ from typing import TypeVar
 string GetPythonOps(const OpList& ops, const ApiDefMap& api_defs,
                     const OpRegOffsets& op_reg_offsets,
                     absl::Span<const string> hidden_ops,
-                    absl::Span<const string> source_file_list,
-                    const std::unordered_set<string>& type_annotate_ops) {
+                    absl::Span<const string> source_file_list) {
   return GetPythonOpsImpl(ops, api_defs, op_reg_offsets, hidden_ops,
-                          source_file_list, type_annotate_ops);
+                          source_file_list);
 }
 
 void PrintPythonOps(const OpList& ops, const ApiDefMap& api_defs,
                     const OpRegOffsets& op_reg_offsets,
                     absl::Span<const string> hidden_ops,
-                    absl::Span<const string> source_file_list,
-                    const std::unordered_set<string>& type_annotate_ops) {
+                    absl::Span<const string> source_file_list) {
   printf("%s", GetPythonOpsImpl(ops, api_defs, op_reg_offsets, hidden_ops,
-                                source_file_list, type_annotate_ops)
+                                source_file_list)
                    .c_str());
 }
 
@@ -2145,30 +2085,6 @@ string GetPythonWrappers(const char* op_list_buf, size_t op_list_len) {
 
   ApiDefMap api_def_map(ops);
   return GetPythonOpsImpl(ops, api_def_map, OpRegOffsets(), {}, {});
-}
-
-string GetSingleTensorArgAnnotation(
-    const OpDef::ArgDef& arg,
-    const std::unordered_map<string, string>& type_annotations) {
-  if (!arg.type_attr().empty()) {
-    // Get the correct TypeVar if arg maps to an attr
-    return "_atypes.TensorFuzzingAnnotation[" +
-           type_annotations.at(arg.type_attr()) + "]";
-  } else {
-    // Get the dtype of the Tensor
-    const string py_dtype = DataTypeToPython(arg.type(), "_dtypes.");
-    return "_atypes.TensorFuzzingAnnotation[" + dtype_type.at(py_dtype) + "]";
-  }
-}
-
-string GetArgAnnotation(
-    const OpDef::ArgDef& arg,
-    const std::unordered_map<string, string>& type_annotations) {
-  if (!arg.number_attr().empty()) {
-    return strings::StrCat(
-        "list[", GetSingleTensorArgAnnotation(arg, type_annotations), "]");
-  }
-  return GetSingleTensorArgAnnotation(arg, type_annotations);
 }
 
 }  // namespace tensorflow

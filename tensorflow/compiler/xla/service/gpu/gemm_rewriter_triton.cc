@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/status.h"
 #include "tensorflow/compiler/xla/util.h"
+#include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/tsl/platform/errors.h"
 #include "tensorflow/tsl/platform/statusor.h"
 
@@ -358,7 +359,8 @@ class GemmRewriterTritonVisitor : public DfsHloRewriteVisitor {
 
     // TODO(b/266857789): also fuse convert(dot()) at output if present:
     // seen on s8xf32->bf16
-    HloComputation::Builder builder(absl::StrCat("triton_gemm_", dot->name()));
+    std::string suggested_name = absl::StrCat("triton_gemm_", dot->name());
+    HloComputation::Builder builder(suggested_name);
     // Original instruction -> fused one.
     absl::flat_hash_map<const HloInstruction*, HloInstruction*>
         old_to_new_mapping;
@@ -448,6 +450,8 @@ class GemmRewriterTritonVisitor : public DfsHloRewriteVisitor {
         dot->parent()->AddInstruction(HloInstruction::CreateFusion(
             dot->shape(), HloInstruction::FusionKind::kCustom, call_operands,
             computation));
+    dot_fusion->GetModule()->SetAndUniquifyInstrName(dot_fusion,
+                                                     suggested_name);
     dot_fusion->set_raw_backend_config_string(
         std::string(kTritonGemmBackendConfig));
     if (dot->IsRoot()) {
@@ -546,7 +550,9 @@ DotFusionAnalysis::DotFusionAnalysis(const HloInstruction* root) {
 bool IsTritonHandledGEMM(
     const HloInstruction& dot,
     const se::CudaComputeCapability cuda_compute_capability) {
-  if (dot.opcode() != HloOpcode::kDot) {
+  if (dot.opcode() != HloOpcode::kDot ||
+      absl::c_any_of(dot.precision_config().operand_precision(),
+                     [](int x) { return x != PrecisionConfig::DEFAULT; })) {
     return false;
   }
   const DotDimensionNumbers& dimension_numbers = dot.dot_dimension_numbers();

@@ -76,7 +76,6 @@ mlir::bufferization::OneShotBufferizationOptions GetBufferizationOptions() {
 }
 
 void AddSparsificationPasses(mlir::OpPassManager& pm) {
-  pm.addNestedPass<FuncOp>(createSparseCustomCallToPackUnpackOpPass());
   pm.addNestedPass<FuncOp>(mlir::createLinalgGeneralizationPass());
   pm.addNestedPass<FuncOp>(mlir::gml_st::createRewriteFromElementsOpPass());
   pm.addPass(mlir::bufferization::createEmptyTensorEliminationPass());
@@ -120,6 +119,7 @@ static Status CreateHloXlaPipeline(
 
   // Some early sparse rewriting rules.
   if (options.sparse_bufferization) {
+    pm.addNestedPass<FuncOp>(createSparseCustomCallRewritingPass());
     pm.addNestedPass<mlir::func::FuncOp>(
         mlir::mhlo::createSparseRewritingPass());
   }
@@ -137,23 +137,20 @@ static Status CreateHloXlaPipeline(
       mlir::mhlo::createHloCanonicalizeScatterPass());
   pm.addNestedPass<FuncOp>(mlir::mhlo::createHloCanonicalizeDotPass());
   pm.addNestedPass<FuncOp>(mlir::mhlo::createGroupReductionDimensionsPass());
-  // TODO(kramerb): Give THLO lowerings priority over linalg when it's ready for
-  // concat, reduce and friends.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      mlir::mhlo::createLegalizeMHLOToTHLOPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       mlir::mhlo::createLegalizeHloToLinalgPass(
           options.enable_tiling_and_fusion));
-  pm.addNestedPass<mlir::func::FuncOp>(
-      mlir::mhlo::createLegalizeMHLOToTHLOPass());
 
   // Lower index cast on tensors to tensor.generate.
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createLowerIndexCastPass());
 
   pm.addPass(mlir::mhlo::createConvertToSignlessPass());
 
-  // Transform scatter ops.
+  // Tile tHLO ops to 1.
   if (!options.enable_tiling_and_fusion) {
-    pm.addNestedPass<mlir::func::FuncOp>(
-        mlir::gml_st::createTransformScatterForCpuPass());
+    pm.addNestedPass<mlir::func::FuncOp>(mlir::gml_st::createTileByOnePass());
   }
 
   // Lower shape dialect to standard to enable linalg canonicalizations (e.g.
@@ -213,12 +210,11 @@ static Status CreateHloXlaPipeline(
 
   if (options.enable_tiling_and_fusion) {
     pm.addNestedPass<FuncOp>(mlir::gml_st::createVectorizeCopyPass());
-    pm.addNestedPass<FuncOp>(mlir::gml_st::createSimplifyDeadCopyPass());
+    pm.addNestedPass<FuncOp>(mlir::gml_st::createNaiveCopyRemovalPass());
   }
   // Handle framework specific requirements for buffers and then insert
   // deallocations for temporary buffers.
   pm.addNestedPass<mlir::func::FuncOp>(mlir::createConvertLinalgToLoopsPass());
-  pm.addNestedPass<mlir::func::FuncOp>(mlir::gml_st::createGmlStToScfPass());
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::createCanonicalizerPass());
   mlir::bufferization::BufferResultsToOutParamsOptions out_params_options;
