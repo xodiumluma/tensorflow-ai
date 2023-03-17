@@ -27,6 +27,12 @@
 #   avx_win:            Windows avx instruction set build
 #   avx2_win:           Windows avx2 instruction set build
 #
-# 
+# Other options for building:
+#   short_logs:         Skip warnings, only log errors when building
+#   verbose_logs:       Display build time compiler warnings
+#   monolithic:         Build all C++ code into a single shared object
+#   dynamic_kernels:    Experimental flag to link kernels dynamically
+#   libc++:             Instead of sdtlibc++, link against libc++
+
 
 
