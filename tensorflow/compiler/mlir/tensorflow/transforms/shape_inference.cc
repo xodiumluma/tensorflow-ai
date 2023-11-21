@@ -19,9 +19,13 @@ limitations under the License.
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <stack>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_set.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -33,6 +37,7 @@ limitations under the License.
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "mlir/Dialect/Func/Extensions/AllExtensions.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
@@ -43,8 +48,8 @@ limitations under the License.
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
-#include "mlir/IR/FunctionInterfaces.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/Matchers.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
@@ -54,6 +59,7 @@ limitations under the License.
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Interfaces/CallInterfaces.h"  // from @llvm-project
 #include "mlir/Interfaces/FoldInterfaces.h"  // from @llvm-project
+#include "mlir/Interfaces/FunctionInterfaces.h"  // from @llvm-project
 #include "mlir/Interfaces/InferTypeOpInterface.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
@@ -69,12 +75,13 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/serialize_mlir_module_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/shape_inference_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
-#include "tensorflow/compiler/xla/service/shape_inference.h"
-#include "tensorflow/compiler/xla/shape.h"
-#include "tensorflow/compiler/xla/translate/hlo_to_mhlo/hlo_utils.h"
-#include "tensorflow/compiler/xla/translate/mhlo_to_hlo/type_to_shape.h"
-#include "tensorflow/compiler/xla/window_util.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/compiler/tf2xla/kernels/xla_call_module_loader.h"
+#include "xla/service/shape_inference.h"
+#include "xla/shape.h"
+#include "xla/translate/hlo_to_mhlo/hlo_utils.h"
+#include "xla/translate/mhlo_to_hlo/type_to_shape.h"
+#include "xla/window_util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/ir/types/dialect.h"
@@ -427,6 +434,35 @@ Type GetType(Attribute shape_attr, Attribute type_attr) {
     return UnrankedTensorType::get(type.getValue());
 }
 
+// Returns a new arg type based on the shape and element type. If there are
+// dynamic bounds attribute to the arg, update the bounds based on the shape
+// as well.
+Type GetNewArgType(Type old_arg_type, ArrayRef<int64_t> shape,
+                   Type element_type, mlir::MLIRContext* context) {
+  Type new_arg_type = tensorflow::GetTypeFromTFTensorShape(shape, element_type);
+
+  if (auto input_ty = old_arg_type.dyn_cast<RankedTensorType>()) {
+    ArrayRef<int64_t> bounds = hlo::encodingToBounds(input_ty.getEncoding());
+    // The input type has bounded dynamic dimension.
+    if (!bounds.empty()) {
+      SmallVector<int64_t> new_bounds(bounds.begin(), bounds.end());
+      SmallVector<int64_t> new_shape(shape.begin(), shape.end());
+      // If dimension of the input type is dynamic. Update the
+      // bounds of the dim with the new type if needed.
+      for (int i = 0; i < input_ty.getShape().size(); i++) {
+        if (hlo::isDynamicDimSize(input_ty.getShape()[i])) {
+          new_bounds[i] = new_shape[i];
+          new_shape[i] = ShapedType::kDynamic;
+        }
+      }
+      new_arg_type = tensorflow::GetTypeFromTFTensorShape(
+          new_shape, element_type,
+          mhlo::TypeExtensionsAttr::get(context, new_bounds));
+    }
+  }
+  return new_arg_type;
+}
+
 }  // namespace
 
 // Returns whether type can be further refined.
@@ -495,7 +531,7 @@ struct ValuePortHasher {
 };
 
 using ValuePortResultMap =
-    std::unordered_map<ValuePort, Attribute, ValuePortHasher>;
+    absl::flat_hash_map<ValuePort, Attribute, ValuePortHasher>;
 using ComputedQueryFn = function_ref<bool(ValuePort)>;
 using ValueQueryFn = function_ref<Attribute(const ValuePort&)>;
 using ValuePortInputs = SmallVectorImpl<ValuePort>;
@@ -799,6 +835,11 @@ class ShapeInference {
   // Returns whether it was able to compute constant values.
   LogicalResult TryToFold(Operation* op);
 
+  // Forcely assign operand types to result types (the i-th operand type will
+  // assign to i-th result type). Returns true if anything is changed.
+  bool ForceTypeForPassThroughOperands(Operation* op, OperandRange operands,
+                                       ResultRange results);
+
   // Makes result types match the operand types (the i-th result type will
   // match the i-th operand type). Returns true if anything is changed.
   bool RefineTypeForPassThroughOperands(Operation* op, OperandRange operands,
@@ -883,6 +924,10 @@ class ShapeInference {
   // yields.
   bool InferShapeForCaseRegion(CaseRegionOp op);
 
+  // Infers the shape CaseRegion outputs based on the embedded StableHLO module.
+  // Returns true if a return type was changed.
+  bool InferShapeForXlaCallModule(XlaCallModuleOp op);
+
   // Infers the shape of _XlaHostComputeMlir based on the host computation
   // module.  Returns true if a return type was changed.
   bool InferShapeForXlaHostComputeMlir(_XlaHostComputeMlirOp op);
@@ -911,6 +956,10 @@ class ShapeInference {
   // refines the element shape if all tensors written to the list across all
   // mutations have identical static shape.
   bool InferShapeForTensorListInitOps(Operation* op);
+
+  // Conservatively infers shape of output tenorlist and item based on
+  // input tensorlist's element shape.
+  bool InferShapeForTensorListPopBackOp(TensorListPopBackOp op);
 
   // Infers the shape of VarHandleOp based on the uses of the VarHandleOp to
   // update the subtypes of the resource type.
@@ -955,6 +1004,14 @@ class ShapeInference {
   // TODO(b/154065712): Remove propagate_caller_callee_constants once using
   // SCCP pass instead.
   bool propagate_caller_callee_constants_;
+
+  // XlaCallModule loader, which is used to deserialize the StableHLO module in
+  // each `XlaCallModule` op. Uses its own MLIRContext since the loader needs to
+  // load additional dialects, which is not allowed for the main context since
+  // shape inference may be called from a pass.
+  MLIRContext xla_call_module_context_;
+  DenseMap<XlaCallModuleOp, std::unique_ptr<tensorflow::XlaCallModuleLoader>>
+      xla_call_module_loaders_;
 };
 
 ShapeInference::ShapeInference(int64_t graph_version, ModuleOp module,
@@ -1138,6 +1195,89 @@ bool ShapeInference::InferShapeForCaseRegion(CaseRegionOp op) {
       changed = RefineResultType(op, result, *types.begin()) || changed;
     }
   }
+  return changed;
+}
+
+bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
+  tensorflow::XlaCallModuleLoader* loader;
+  if (auto it = xla_call_module_loaders_.find(op);
+      it != xla_call_module_loaders_.end()) {
+    loader = it->second.get();
+  } else {
+    // Lazily parse XlaCallModule's embedded HLO module and cache the loader to
+    // avoid repeatedly parsing the module.
+
+    std::vector<std::string> disabled_checks;
+    for (auto attr : op.getDisabledChecks().getAsRange<StringAttr>()) {
+      disabled_checks.push_back(attr.getValue().str());
+    }
+    std::vector<std::string> platforms;
+    for (auto attr : op.getPlatforms().getAsRange<StringAttr>()) {
+      platforms.push_back(attr.getValue().str());
+    }
+    // Always use the first platform. The assumption is that shape inference
+    // results should be the same regardless of which platform is chosen.
+    // Very old versions of the op have an empty platforms attribute.
+    std::string loading_platform =
+        (platforms.empty() ? "CPU" : platforms.front());
+
+    // It is a terrible idea to have local MLIR contexts so we need to
+    // register extensions here, again.
+    mlir::DialectRegistry registry;
+    registry.insert<mlir::func::FuncDialect>();
+    mlir::func::registerAllExtensions(registry);
+    xla_call_module_context_.appendDialectRegistry(registry);
+
+    auto l = tensorflow::XlaCallModuleLoader::Create(
+        &xla_call_module_context_, op.getVersion(), op.getModule().str(),
+        std::move(disabled_checks), std::move(platforms),
+        std::move(loading_platform),
+        /*num_invocation_args=*/op.getArgs().size(),
+        op.getHasTokenInputOutput());
+    if (!l.ok()) {
+      LLVM_DEBUG(llvm::dbgs() << "Parsing error in XlaCallModule: "
+                              << l.status().ToString() << "\n");
+      return false;
+    }
+
+    it = xla_call_module_loaders_.insert({op, *std::move(l)}).first;
+    loader = it->second.get();
+  }
+
+  // Cannot pass `op.getArgs().getTypes()` to `loader->RefineDynamicShapes`
+  // because `op` and `loader` are using different MLIR contexts. See comments
+  // on `xla_call_module_context_` for details.
+  std::vector<xla::Shape> input_shapes;
+  input_shapes.reserve(op.getArgs().size());
+  for (mlir::Type type : op.getArgs().getTypes()) {
+    input_shapes.push_back(xla::TypeToShape(type));
+  }
+
+  tsl::Status status = loader->RefineDynamicShapes(input_shapes);
+  if (!status.ok()) {
+    LLVM_DEBUG(llvm::dbgs() << "Failed during XlaCallModule shape refinement: "
+                            << status.ToString());
+    return false;
+  }
+
+  bool changed = false;
+  for (auto [result, type] :
+       llvm::zip(op.getResults(), loader->OutputTypes())) {
+    auto ranked = type.dyn_cast<RankedTensorType>();
+    if (ranked == nullptr) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Unsupported XlaCallModule result type: " << type);
+      continue;
+    }
+
+    // Build a new type object from `type` and `elem_type`. `type` is owned by
+    // `xla_call_module_context_` and should not be mixed with op's context.
+    auto new_type = RankedTensorType::get(
+        ranked.getShape(), getElementTypeOrSelf(result.getType()));
+
+    changed = RefineResultType(op, result, new_type) || changed;
+  }
+
   return changed;
 }
 
@@ -1418,7 +1558,7 @@ bool ShapeInference::InferShapeForReduceDataset(ReduceDatasetOp op,
 }
 
 bool ShapeInference::InferShapeForTensorListInitOps(Operation* op) {
-  DCOMMENT_OP(op, "Inferring shape for TensorList ");
+  DCOMMENT_OP(op, "Inferring shape for TensorListInitOps.");
   Value handle = op->getResult(0);
   Value initial_element_shape = GetElementShapeOperand(op);
   RankedTensorType element_type;
@@ -1441,6 +1581,42 @@ bool ShapeInference::InferShapeForTensorListInitOps(Operation* op) {
   bool changed = RefineResultType(op, handle, tensor_type);
   if (changed) DCOMMENT_OP(op, "Modified after shape inference:");
   return changed;
+}
+
+bool ShapeInference::InferShapeForTensorListPopBackOp(TensorListPopBackOp op) {
+  // The first Operand is assumed to be a TensorType around a variant with a
+  // single subtype (e.g. tensor<!tf_type.variant<tensor<2xi32>>>). We will
+  // copy this type to the first result, and copy the singular variant subtype
+  // to the second result (tensor<2xi32>).
+  DCOMMENT_OP(op, "Inferring shape for TensorListPopBackOp.");
+
+  auto src_list_handle_t =
+      op.getOperand(0).getType().dyn_cast_or_null<TensorType>();
+  if (!src_list_handle_t) return false;
+
+  // Copy of operand tensorlist type.
+  TensorType dst_list_handle_t =
+      src_list_handle_t.clone(src_list_handle_t.getElementType());
+  auto variant_element_t =
+      dst_list_handle_t.getElementType().dyn_cast_or_null<VariantType>();
+  if (!variant_element_t || variant_element_t.getSubtypes().size() != 1)
+    return false;
+
+  // Underlying TensorType from variant that represents a shape signature
+  // compatible with all elements in the tensorlist.
+  TensorType list_handle_element_t = variant_element_t.getSubtypes()[0];
+
+  if (!RefineResultType(op, op->getResult(0), dst_list_handle_t)) {
+    DCOMMENT("InferShapeForTensorListPopBackOp could not propogate result 0"
+             << op);
+    return false;
+  }
+  if (!RefineResultType(op, op->getResult(1), list_handle_element_t)) {
+    DCOMMENT("InferShapeForTensorListPopBackOp could not propogate result 1"
+             << op);
+    return false;
+  }
+  return true;
 }
 
 bool ShapeInference::InferShapeForVarHandleOp(VarHandleOp op) {
@@ -1720,7 +1896,8 @@ bool ShapeInference::InferShapeForXlaSelectAndScatterOp(
 
 bool ShapeInference::InferShapeForXlaGatherOp(XlaGatherOp op) {
   xla::Shape input_shape = xla::TypeToShape(op.getOperand().getType());
-  if (input_shape == xla::Shape()) return false;
+  if (input_shape == xla::Shape() || input_shape.is_unbounded_dynamic())
+    return false;
 
   xla::Shape start_indices_shape =
       xla::TypeToShape(op.getStartIndices().getType());
@@ -1741,14 +1918,14 @@ bool ShapeInference::InferShapeForXlaGatherOp(XlaGatherOp op) {
   auto output_shape = xla::ShapeInference::InferGatherShape(
       input_shape, start_indices_shape, gather_dim_numbers, slice_sizes);
   if (!output_shape.ok()) {
-    op->emitError(output_shape.status().error_message());
+    op->emitError() << output_shape.status().message();
     return false;
   }
 
   auto refined_type = xla::ConvertShapeToType<RankedTensorType>(
       *output_shape, mlir::Builder(op));
   if (!refined_type.ok()) {
-    op->emitError(refined_type.status().error_message());
+    op->emitError() << refined_type.status().message();
     return false;
   }
 
@@ -2030,7 +2207,8 @@ bool ShapeInference::RefineWithInferTypeOpInterface(
   SmallVector<Type, 4> inferred;
   LogicalResult res = infer_ti.inferReturnTypes(
       op->getContext(), op->getLoc(), op->getOperands(),
-      op->getAttrDictionary(), op->getRegions(), inferred);
+      op->getAttrDictionary(), op->getPropertiesStorage(), op->getRegions(),
+      inferred);
   if (failed(res)) {
     op->emitOpError("failed to refine type as inference failed");
     return false;
@@ -2116,6 +2294,23 @@ ShapeHandle ShapeInference::ComputeOutputAsShape(OpResult result,
   return ic->MakeShape(dims);
 }
 
+bool ShapeInference::ForceTypeForPassThroughOperands(Operation* op,
+                                                     OperandRange operands,
+                                                     ResultRange results) {
+  bool changed = false;
+  for (auto entry : llvm::zip(operands, results)) {
+    Type operand_type = std::get<0>(entry).getType();
+    Value result = std::get<1>(entry);
+    TensorType result_type = dyn_cast<TensorType>(result.getType());
+    if (result_type == operand_type) continue;
+
+    if (!UpdateTypeAndInsertIncompatibleUseCasts(operand_type, result))
+      continue;
+    changed = true;
+  }
+  return changed;
+}
+
 bool ShapeInference::RefineTypeForPassThroughOperands(Operation* op,
                                                       OperandRange operands,
                                                       ResultRange results) {
@@ -2151,14 +2346,14 @@ bool ShapeInference::RefineShapeForPassThroughOps(Operation* op) {
 
 bool ShapeInference::InferShapeForNonTFDialectOperation(Operation* op) {
   if (auto graph_op = dyn_cast<tf_executor::GraphOp>(op)) {
-    return RefineTypeForPassThroughOperands(graph_op.GetFetch(),
-                                            graph_op.GetFetch().getFetches(),
-                                            op->getResults());
+    return ForceTypeForPassThroughOperands(graph_op.GetFetch(),
+                                           graph_op.GetFetch().getFetches(),
+                                           op->getResults());
   }
   if (auto island_op = dyn_cast<tf_executor::IslandOp>(op)) {
-    return RefineTypeForPassThroughOperands(island_op.GetYield(),
-                                            island_op.GetYield().getFetches(),
-                                            op->getResults());
+    return ForceTypeForPassThroughOperands(island_op.GetYield(),
+                                           island_op.GetYield().getFetches(),
+                                           op->getResults());
   }
   if (auto iter_sink = dyn_cast<tf_executor::NextIterationSinkOp>(op)) {
     auto iter_source = cast<tf_executor::NextIterationSourceOp>(
@@ -2319,6 +2514,10 @@ bool ShapeInference::InferShapeForSingleOperation(Operation* op,
         while_region,
         while_region.getBody().front().getTerminator()->getOperandTypes());
 
+  if (auto xla_call_module = dyn_cast<XlaCallModuleOp>(op)) {
+    return InferShapeForXlaCallModule(xla_call_module);
+  }
+
   if (auto host_compute_op = dyn_cast<_XlaHostComputeMlirOp>(op)) {
     return InferShapeForXlaHostComputeMlir(host_compute_op);
   }
@@ -2339,6 +2538,10 @@ bool ShapeInference::InferShapeForSingleOperation(Operation* op,
   // operations. If we are unable to refine element shape here, proceed to use
   // the InferenceContext below to get more precise shapes.
   if (IsTensorListInitOp(op) && InferShapeForTensorListInitOps(op)) return true;
+
+  if (auto pop_back = dyn_cast<TF::TensorListPopBackOp>(op)) {
+    return InferShapeForTensorListPopBackOp(pop_back);
+  }
 
   if (auto var_handle_op = dyn_cast<VarHandleOp>(op)) {
     return InferShapeForVarHandleOp(var_handle_op);
@@ -2952,8 +3155,9 @@ FailureOr<bool> InferShapeForFunction(func::FuncOp func,
       element_type = unranked_input_ty.getElementType();
     }
 
-    auto new_arg_type =
-        tensorflow::GetTypeFromTFTensorShape(shape, element_type);
+    auto new_arg_type = GetNewArgType(func_type.getInput(i), shape,
+                                      element_type, func.getContext());
+
     if (new_arg_type != func_type.getInput(i)) {
       // If the new type is more detailed, trigger shape inference.
       func.getArgument(i).setType(new_arg_type);

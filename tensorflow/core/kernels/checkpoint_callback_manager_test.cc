@@ -26,7 +26,7 @@ limitations under the License.
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/tsl/lib/core/status_test_util.h"
+#include "tsl/lib/core/status_test_util.h"
 
 namespace tensorflow {
 namespace checkpoint {
@@ -71,6 +71,16 @@ TEST_F(CheckpointCallbackManagerTest,
           "/foo/bar/model.ckpt-5");
   TF_ASSERT_OK(pair.status());
   EXPECT_EQ(pair->first, "model.ckpt-5");
+  EXPECT_EQ(pair->second, "/foo/bar");
+}
+
+TEST_F(CheckpointCallbackManagerTest,
+       GetCheckpointIdAndPathFromPrefixForLongerPartName) {
+  StatusOr<std::pair<std::string, std::string>> pair =
+      CheckpointCallbackManager::GetCheckpointIdAndPathFromPrefix(
+          "/foo/bar/ckpt-tensor-1_temp/part-00000-of-00002_dev-0-of-2");
+  TF_ASSERT_OK(pair.status());
+  EXPECT_EQ(pair->first, "ckpt-tensor-1");
   EXPECT_EQ(pair->second, "/foo/bar");
 }
 

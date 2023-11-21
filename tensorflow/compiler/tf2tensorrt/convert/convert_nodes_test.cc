@@ -40,7 +40,7 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "third_party/gpus/cuda/include/cuda.h"
 #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
 #include "tensorflow/cc/framework/ops.h"
@@ -1457,7 +1457,7 @@ class OpConverterTest : public ::testing::Test {
 
   void RunConversion(const Node* node,
                      absl::StatusCode expected_code = absl::StatusCode::kOk,
-                     const std::string& expected_msg_substr = "") {
+                     absl::string_view expected_msg_substr = "") {
     EXPECT_THAT(converter_->ConvertNode(node->def()),
                 StatusIs(expected_code, HasSubstr(expected_msg_substr)));
     if (expected_code == absl::StatusCode::kOk) {
@@ -1470,7 +1470,7 @@ class OpConverterTest : public ::testing::Test {
   void RunValidationAndConversion(
       const NodeDef& node_def,
       absl::StatusCode expected_code = absl::StatusCode::kOk,
-      const std::string& expected_msg_substr = "",
+      absl::string_view expected_msg_substr = "",
       bool should_run_conversion = true) {
     // Add the node to the graph.
     // TODO(laigd): we should accept a function that adds the node using
@@ -1505,7 +1505,7 @@ class OpConverterTest : public ::testing::Test {
       const std::vector<std::vector<int>>& exp_out_dims) {
     RunValidationAndConversion(node_def,
                                static_cast<absl::StatusCode>(status.code()),
-                               status.error_message(), true);
+                               status.message(), true);
 
     if (status.ok()) {
       // TODO(tfeher): Enable this check in explicit_batch_mode.
@@ -1612,7 +1612,7 @@ class VariableOpConverterTest : public OpConverterTest {
         std::make_unique<checkpoint::TensorSliceReaderCacheWrapper>();
 
     flib_def_ = std::make_unique<FunctionLibraryDefinition>(
-        OpRegistry::Global(), FunctionDefLibrary{});
+        OpRegistry::Global(), FunctionDefLibrary());
 
     thread_pool_ =
         std::make_unique<thread::ThreadPool>(Env::Default(), "default",
@@ -4024,7 +4024,7 @@ TEST_P(OpConverter_FP32_FP16_INT32_Test, ConvertFill) {
     Reset();
     // random data
     AddTestWeights("dims", {2}, {2, 2}, DT_INT32);
-    AddTestWeights("value", {1}, {42.0}, tf_type_);
+    AddTestWeights("value", {1}, {42}, tf_type_);
     RunValidationAndConversion(
         node_def, absl::StatusCode::kUnimplemented,
         convert_not_supported_implicit(node_def.op(), node_def.name()));
@@ -4042,16 +4042,19 @@ TEST_P(OpConverter_FP32_FP16_INT32_Test, ConvertFill) {
       for (auto output_dims : output_dims_params) {
         for (auto value_dims : value_dims_params) {
           Reset();
-          std::vector<int32> dims_dims = {output_dims.size()};
+          std::vector<int32_t> dims_dims = {
+              static_cast<int32_t>(output_dims.size())};
           if (dims_is_tensor) {
             AddTestTensor("dims", dims_dims, DT_INT32, output_dims, dims_dims);
           } else {
             AddTestWeights("dims", dims_dims, output_dims, DT_INT32);
           }
           if (value_is_tensor) {
-            AddTestTensor("value", value_dims, tf_type_, {val});
+            AddTestTensor("value", value_dims, tf_type_,
+                          {static_cast<int>(val)});
           } else {
-            AddTestWeights("value", value_dims, {val}, tf_type_);
+            AddTestWeights("value", value_dims, {static_cast<int>(val)},
+                           tf_type_);
           }
           size_t nb_el = 1;
           for (auto d : output_dims) {
@@ -4084,7 +4087,7 @@ TEST_P(OpConverter_FP32_FP16_INT32_Test, ConvertRange) {
         // (a) for all parameters, when shape_idx > 3
         // (b) for all parameters, except shape_idx, when shape_idx >= 0
         // (c) for none of the shape_idx < 0
-        if (shape_idx > 3 || shape_idx >= 0 && shape_idx != i) {
+        if (shape_idx > 3 || (shape_idx >= 0 && shape_idx != i)) {
           partial_shape_dims = {1};
         }
         AddTestTensor(name[i], {1}, type[i], value[i], partial_shape_dims);
@@ -4140,7 +4143,7 @@ TEST_P(OpConverter_FP32_FP16_INT32_Test, ConvertRange) {
                                   limit_type == DT_INT32 &&
                                   delta_type == DT_INT32;
 
-        if (all_weights || all_integers && !config[2]) {
+        if (all_weights || (all_integers && !config[2])) {
           // Reject invalid parameters if delta = 0 and it's passed as a weight.
           param_value[2] = {0};
           set_parameters(param_name, param_value, param_type, config);
@@ -9435,8 +9438,8 @@ void OpConverter_Select::RunTest(const string& opName) {
           std::accumulate(std::begin(expect_dims), std::end(expect_dims), 1,
                           std::multiplies<int>());
 
-      assert(rank_out == expected_out ? expected_out->size()
-                                      : rank[use_indices >= 0 ? 0 : 1]);
+      assert(rank_out == (expected_out ? expected_out->size()
+                                       : rank[use_indices >= 0 ? 0 : 1]));
 
       expected_output.resize(rank_out);
       const auto& data_then = *par_value[1];
@@ -9476,7 +9479,7 @@ void OpConverter_Select::RunTest(const string& opName) {
     const auto nMax = testing_SelectV2 ? 2 : 1;
     for (int n = 0; n < nMax; n++) {
       set_parameters();
-      if (testing_SelectV2 || same_then_else_shapes && same_cond_chape) {
+      if (testing_SelectV2 || (same_then_else_shapes && same_cond_chape)) {
         TestOpConverter(node, exp_dims, OkStatus(), OkStatus(),
                         ElementsAreArray(expected_output));
       } else {
@@ -9880,6 +9883,48 @@ INSTANTIATE_TEST_CASE_P(
 TEST_P(OpConverter_Select, ConvertSelectV2) { RunTest("SelectV2"); }
 
 TEST_P(OpConverter_Select, Convert_Select) { RunTest("Select"); }
+
+TEST_F(OpConverterTest, DuplicateSqueeze) {
+  // Define a custom converter which performs multiple squeezes.
+  auto op_converter = [](const OpConverterParams* params) -> Status {
+    if (params->validation_only) return OkStatus();
+    auto input = params->inputs.at(0).tensor();
+    ITensorProxyPtr output;
+    // Squeeze the first dimension.
+    std::vector<int> new_dims = {0, 1, 2, 3};
+    TF_EXPECT_OK(params->converter->SqueezeTensor(
+        /*input=*/input, /*input_dims=*/&new_dims, /*params=*/params,
+        /*output=*/&output, /*op_instance=*/0));
+    // Squeeze the second dimension.
+    new_dims = {0, 2, 3};
+    TF_EXPECT_OK(params->converter->SqueezeTensor(
+        /*input=*/output, /*input_dims=*/&new_dims, /*params=*/params,
+        /*output=*/&output, /*op_instance=*/1));
+    params->outputs->push_back(TRT_TensorOrWeights(output));
+    return OkStatus();
+  };
+  // Use a simple unary op for the custom converter and add an input.
+  NodeDef node_def = CreateUnaryOp<ops::Abs>(DataType::DT_FLOAT);
+  AddTestTensor("input", {1, 1, 2, 3});
+  // Override the converter for Abs to use the custom converter for this test
+  // only, and run conversion.
+  GetOpConverterRegistry()->Register("Abs", kDefaultConverterPriority + 1,
+                                     op_converter);
+  RunValidationAndConversion(node_def);
+  // Set up the inputs and outputs.
+  DataVec input_data;
+  DataVec output_data;
+  InputOutputData abs_input{
+      "input", ConstructTensor<float>(/*data_size=*/6, /*value=*/0,
+                                      /*tf_type=*/DataType::DT_FLOAT)};
+  InputOutputData abs_output{
+      "my_unary", ConstructTensor<float>(/*data_size=*/6, /*value=*/0,
+                                         /*tf_type=*/DataType::DT_FLOAT)};
+  input_data.push_back(abs_input);
+  output_data.push_back(abs_output);
+  // Build and run the cuda engine.
+  TF_EXPECT_OK(BuildAndRun(input_data, &output_data));
+}
 
 #endif
 

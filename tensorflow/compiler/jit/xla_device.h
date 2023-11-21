@@ -27,12 +27,11 @@ limitations under the License.
 #include <set>
 
 #include "absl/types/optional.h"
-#include "tensorflow/compiler/jit/xla_device_context.h"
 #include "tensorflow/compiler/jit/xla_tensor.h"
 #include "tensorflow/compiler/tf2xla/layout_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
+#include "xla/client/local_client.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/local_device.h"
 #include "tensorflow/core/framework/allocator.h"
@@ -89,7 +88,8 @@ class XlaDevice : public LocalDevice {
     PaddedShapeFn padded_shape_fn_;
     const bool use_multiple_streams_;
 
-    TF_DISALLOW_COPY_AND_ASSIGN(Metadata);
+    Metadata(const Metadata&) = delete;
+    void operator=(const Metadata&) = delete;
   };
 
   // Sets `*metadata` to the XlaDevice Metadata in the XLA device used by `ctx`.
@@ -226,6 +226,8 @@ class XlaDevice : public LocalDevice {
   const Metadata xla_metadata_;
   // Which hardware device in the client's platform this XlaDevice controls.
   const int device_ordinal_;
+  // The name/type of this XlaDevice. eg. "XLA_GPU".
+  const DeviceType device_name_;
   // The name of the device that is used to compile Ops for this XlaDevice.
   const DeviceType jit_device_name_;
   // The platform for this device.

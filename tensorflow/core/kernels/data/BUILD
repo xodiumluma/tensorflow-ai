@@ -66,6 +66,7 @@ tf_kernel_library(
         "//tensorflow/core/data:serialization_utils",
         "//tensorflow/core/framework:dataset_options_proto_cc",
         "//tensorflow/core/util/tensor_bundle",
+        "//tensorflow/core/util/tensor_bundle:naming",
     ],
 )
 
@@ -647,7 +648,7 @@ tf_kernel_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
-        "//third_party/eigen3",
+        "@eigen_archive//:eigen3",
     ],
 )
 
@@ -875,6 +876,7 @@ tf_kernel_library(
         "//tensorflow/core/data:stats_utils",
         "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/core/profiler/lib:traceme_encode",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -910,6 +912,8 @@ cc_library(
     deps = [
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
+        "//tensorflow/core/data:dataset_utils",
+        "@com_google_absl//absl/types:optional",
     ],
 )
 
@@ -1409,6 +1413,7 @@ tf_cc_test(
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:dataset_ops_op_lib",
         "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
@@ -1537,13 +1542,13 @@ filegroup(
         "//tensorflow/core/data:dataset_utils.cc",
         "//tensorflow/core/data:finalization_utils.cc",
         "//tensorflow/core/data:metric_utils.cc",
-        "//tensorflow/core/data:tfdataz_metrics.cc",
         "//tensorflow/core/data:name_utils.cc",
         "//tensorflow/core/data:rewrite_utils.cc",
         "//tensorflow/core/data:root_dataset.cc",
         "//tensorflow/core/data:serialization_utils.cc",
         "//tensorflow/core/data:split_utils.cc",
         "//tensorflow/core/data:stats_utils.cc",
+        "//tensorflow/core/data:tfdataz_metrics.cc",
         "//tensorflow/core/data:unbounded_thread_pool.cc",
         "//tensorflow/core/data:utils.cc",
         "//tensorflow/core/kernels/data/experimental:portable_all_op_kernels",

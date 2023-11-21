@@ -621,7 +621,7 @@ absl::Status GPUOperationFromNodePart0(
     }
     case OperationType::GATHER: {
       auto attr = absl::any_cast<GatherAttributes>(node.operation.attributes);
-      RETURN_IF_ERROR(SelectGather(attr, op_def, gpu_op));
+      RETURN_IF_ERROR(SelectGather(attr, op_def, gpu_info, gpu_op));
       return absl::OkStatus();
     }
     case OperationType::LSTM: {
@@ -760,6 +760,7 @@ absl::Status GPUOperationFromNodePart0(
     case OperationType::COS:
     case OperationType::ELU:
     case OperationType::EXP:
+    case OperationType::GELU:
     case OperationType::HARD_SWISH:
     case OperationType::LOG:
     case OperationType::NEG:
@@ -809,7 +810,7 @@ absl::Status GPUOperationFromNodePart0(
         return absl::OkStatus();
       } else if (inputs.size() == 1 && node.operation.attributes.has_value()) {
         Value* input = inputs[0];
-        Value* output = inputs[0];
+        Value* output = outputs[0];
         switch (inputs[0]->tensor.type) {
           case DataType::BOOL:
             return CreateElementwiseTwoInputWithOneConstant<DataType::BOOL,

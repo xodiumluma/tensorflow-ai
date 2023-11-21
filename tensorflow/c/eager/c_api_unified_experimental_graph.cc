@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
@@ -34,6 +35,7 @@ limitations under the License.
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/strcat.h"
 #include "tensorflow/core/platform/types.h"
+#include "tsl/c/tsl_status_internal.h"
 
 using tensorflow::dyn_cast;
 using tensorflow::string;
@@ -204,7 +206,7 @@ class GraphOperation : public TracingOperation {
   Status SetAttrType(const char* const attr_name, DataType value) override {
     if (!op_) {
       return Status(
-          error::Code::FAILED_PRECONDITION,
+          absl::StatusCode::kFailedPrecondition,
           "op_type and op_name must be specified before specifying attrs.");
     }
     op_->node_builder.Attr(attr_name, value);
@@ -387,7 +389,7 @@ class GraphContext : public TracingContext {
                                    inputs_.size(), inputs_.data(),
                                    graph_outputs.size(), graph_outputs.data(),
                                    nullptr, nullptr, name_.data(), s);
-    *f = new GraphFunction(std::move(func->fdef));
+    *f = new GraphFunction(std::move(func->record->fdef()));
     TF_DeleteFunction(func);
     TF_RETURN_IF_ERROR(StatusFromTF_Status(s));
     TF_DeleteStatus(s);

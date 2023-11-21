@@ -841,7 +841,6 @@ class SymbolicShapeRefiner {
       }
 
       int output_port_num = input_tensor.index();
-      AttrValue attr_output_shape;
       TensorShapeProto proto;
       const auto handle = input_ic->output(output_port_num);
       input_ic->ShapeHandleToProto(handle, &proto);
@@ -1323,7 +1322,7 @@ class SymbolicShapeRefiner {
     // If function instantiation failed we will skip it during shape inference.
     if (!function_instantiated.ok()) {
       VLOG(3) << "Failed to instantiate a function. Error: "
-              << function_instantiated.error_message();
+              << function_instantiated.message();
       fun_to_grappler_function_item_[function_def->signature().name()] =
           absl::nullopt;
       return OkStatus();

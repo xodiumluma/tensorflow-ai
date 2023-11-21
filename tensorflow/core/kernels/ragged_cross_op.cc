@@ -17,14 +17,17 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/kernels/ragged_utils.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/util/util.h"
 #include "tensorflow/core/util/work_sharder.h"
+#include "tsl/platform/errors.h"
 
 namespace tensorflow {
 
@@ -386,14 +389,15 @@ class RaggedCrossOp : public OpKernel {
 
     // Validate tensor shapes.
     for (int i = 0; i < num_ragged; ++i) {
-      if (!TensorShapeUtils::IsVector(ragged_values_list[i].shape())) {
-        return errors::InvalidArgument(
+      if (!TensorShapeUtils::IsVector(ragged_values_list[i].shape()) ||
+          !TensorShapeUtils::IsVector(ragged_splits_list[i].shape())) {
+        return absl::InvalidArgumentError(
             "tf.ragged.cross only supports inputs with rank=2.");
       }
-      if (!TensorShapeUtils::IsVector(ragged_splits_list[i].shape()) ||
-          (ragged_splits_list[i].NumElements() == 0)) {
-        return errors::InvalidArgument("Invalid RaggedTensor");
-      }
+
+      int64_t num_values = ragged_values_list[i].NumElements();
+      TF_RETURN_IF_ERROR(RaggedTensorVerifySplits<SplitsType>(
+          ragged_splits_list[i], true, num_values));
     }
     for (int i = 0; i < num_sparse; ++i) {
       if (!TensorShapeUtils::IsMatrix(sparse_indices_list[i].shape()) ||

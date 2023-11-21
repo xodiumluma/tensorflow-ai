@@ -24,9 +24,11 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
+from tensorflow.python.framework import tensor as tensor_lib
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
@@ -70,7 +72,7 @@ __all__ = [
 
 
 def _maybe_constant_value_string(t):
-  if not isinstance(t, ops.Tensor):
+  if not isinstance(t, tensor_lib.Tensor):
     return str(t)
   const_t = tensor_util.constant_value(t)
   if const_t is not None:
@@ -416,7 +418,7 @@ def _pretty_print(data_item, summarize):
   Returns:
     An appropriate string representation of data_item
   """
-  if isinstance(data_item, ops.Tensor):
+  if isinstance(data_item, tensor_lib.Tensor):
     arr = data_item.numpy()
     if np.isscalar(arr):
       # Tensor.numpy() returns a scalar for zero-dimensional tensors
@@ -525,7 +527,7 @@ def assert_proper_iterable(values):
       `Tensor`, `SparseTensor`, `np.array`, `tf.compat.bytes_or_text_types`.
   """
   unintentional_iterables = (
-      (ops.Tensor, sparse_tensor.SparseTensor, np.ndarray)
+      (tensor_lib.Tensor, sparse_tensor.SparseTensor, np.ndarray)
       + compat.bytes_or_text_types
   )
   if isinstance(values, unintentional_iterables):
@@ -1575,7 +1577,7 @@ def _dimension_sizes(x):
     ]
     return sizes
   has_rank_zero = math_ops.equal(array_ops.rank(x), 0)
-  return control_flow_ops.cond(
+  return cond.cond(
       has_rank_zero, lambda: array_ops.constant([1]), lambda: dynamic_shape)
 
 
@@ -1930,7 +1932,7 @@ def assert_shapes(shapes, data=None, summarize=None, message=None, name=None):
 
 
 # pylint: disable=line-too-long
-def _get_diff_for_monotonic_comparison(x):
+def _get_results_for_monotonic_comparison(x, compare_op):
   """Gets the difference x[1:] - x[:-1]."""
   x = array_ops.reshape(x, [-1])
   if not is_numeric_tensor(x):
@@ -1938,12 +1940,15 @@ def _get_diff_for_monotonic_comparison(x):
 
   # If x has less than 2 elements, there is nothing to compare.  So return [].
   is_shorter_than_two = math_ops.less(array_ops.size(x), 2)
-  short_result = lambda: ops.convert_to_tensor([], dtype=x.dtype)
+  short_result = lambda: ops.convert_to_tensor([], dtype=bool)
 
   # With 2 or more elements, return x[1:] - x[:-1]
   s_len = array_ops.shape(x) - 1
-  diff = lambda: array_ops.strided_slice(x, [1], [1] + s_len)- array_ops.strided_slice(x, [0], s_len)
-  return control_flow_ops.cond(is_shorter_than_two, short_result, diff)
+  diff = lambda: compare_op(
+      array_ops.strided_slice(x, [1], [1] + s_len),
+      array_ops.strided_slice(x, [0], s_len),
+  )
+  return cond.cond(is_shorter_than_two, short_result, diff)
 
 
 @tf_export(
@@ -1978,7 +1983,7 @@ def is_numeric_tensor(tensor):
   Returns `False` if `tensor` is of a non-numeric type or if `tensor` is not
   a `tf.Tensor` object.
   """
-  return isinstance(tensor, ops.Tensor) and tensor.dtype in NUMERIC_TYPES
+  return isinstance(tensor, tensor_lib.Tensor) and tensor.dtype in NUMERIC_TYPES
 
 
 @tf_export(
@@ -2017,10 +2022,9 @@ def is_non_decreasing(x, name=None):
     TypeError: if `x` is not a numeric tensor.
   """
   with ops.name_scope(name, 'is_non_decreasing', [x]):
-    diff = _get_diff_for_monotonic_comparison(x)
+    diff = _get_results_for_monotonic_comparison(x, math_ops.greater_equal)
     # When len(x) = 1, diff = [], less_equal = [], and reduce_all([]) = True.
-    zero = ops.convert_to_tensor(0, dtype=diff.dtype)
-    return math_ops.reduce_all(math_ops.less_equal(zero, diff))
+    return math_ops.reduce_all(diff)
 
 
 @tf_export(
@@ -2060,10 +2064,9 @@ def is_strictly_increasing(x, name=None):
     TypeError: if `x` is not a numeric tensor.
   """
   with ops.name_scope(name, 'is_strictly_increasing', [x]):
-    diff = _get_diff_for_monotonic_comparison(x)
+    diff = _get_results_for_monotonic_comparison(x, math_ops.greater)
     # When len(x) = 1, diff = [], less = [], and reduce_all([]) = True.
-    zero = ops.convert_to_tensor(0, dtype=diff.dtype)
-    return math_ops.reduce_all(math_ops.less(zero, diff))
+    return math_ops.reduce_all(diff)
 
 
 def _assert_same_base_type(items, expected_type=None):

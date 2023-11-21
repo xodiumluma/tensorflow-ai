@@ -21,8 +21,8 @@ limitations under the License.
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
-#include "tensorflow/tsl/platform/macros.h"
-#include "tensorflow/tsl/platform/types.h"
+#include "tsl/platform/macros.h"
+#include "tsl/platform/types.h"
 
 namespace tsl {
 class CoordinationServiceAgent;
@@ -42,6 +42,7 @@ enum ActivityCategory {
   kMisc = 2,
   kDatasetOp = 3,
   kTpuOp = 4,
+  kRendezvous = 5,
 };
 
 static tsl::string ToString(ActivityCategory category) {
@@ -56,6 +57,8 @@ static tsl::string ToString(ActivityCategory category) {
       return "Dataset Op";
     case ActivityCategory::kTpuOp:
       return "TPU Op";
+    case ActivityCategory::kRendezvous:
+      return "Rendezvous";
   }
 }
 
@@ -83,7 +86,7 @@ void MaybeEnableMultiWorkersWatching(tsl::CoordinationServiceAgent* agent);
 
 namespace tfw_internal {
 
-#if !defined(IS_MOBILE_PLATFORM)
+#if defined(TF_ENABLE_ACTIVITY_WATCHER)
 
 // Records an activity start without checking whether the watcher is enabled.
 ActivityId RecordActivityStart(std::unique_ptr<Activity> activity);
@@ -129,7 +132,7 @@ template <
     typename ActivityGenerator,
     std::enable_if_t<is_activity_generator<ActivityGenerator>, bool> = true>
 inline ActivityId ActivityStart(ActivityGenerator&& gen, int level = 1) {
-#if !defined(IS_MOBILE_PLATFORM)
+#if defined(TF_ENABLE_ACTIVITY_WATCHER)
   if (TF_PREDICT_FALSE(tfw_internal::WatcherEnabled(level))) {
     return tfw_internal::RecordActivityStart(
         std::forward<ActivityGenerator>(gen)());
@@ -139,7 +142,7 @@ inline ActivityId ActivityStart(ActivityGenerator&& gen, int level = 1) {
 }
 
 inline void ActivityEnd(ActivityId id) {
-#if !defined(IS_MOBILE_PLATFORM)
+#if defined(TF_ENABLE_ACTIVITY_WATCHER)
   if (TF_PREDICT_FALSE(id != kActivityNotRecorded)) {
     tfw_internal::RecordActivityEnd(id);
   }
@@ -165,11 +168,16 @@ class ActivityScope {
   explicit ActivityScope(ActivityGenerator&& gen, int level = 1) {
     activity_id_ = ActivityStart(std::forward<ActivityGenerator>(gen), level);
   }
+  ActivityScope(ActivityScope&& activity) {
+    activity_id_ = activity.activity_id_;
+    activity.activity_id_ = kActivityNotRecorded;
+  }
   ~ActivityScope() { ActivityEnd(activity_id_); }
 
  private:
   ActivityId activity_id_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ActivityScope);
+  ActivityScope(const ActivityScope&) = delete;
+  void operator=(const ActivityScope&) = delete;
 };
 
 }  // namespace activity_watcher

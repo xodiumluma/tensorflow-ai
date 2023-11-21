@@ -3,6 +3,8 @@
 #   and provide TensorRT operators and converter package.
 #   APIs are meant to change over time.
 
+# Placeholder: load py_proto_library
+load("//tensorflow:strict.default.bzl", "py_strict_library")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
@@ -13,11 +15,15 @@ load(
     "tf_custom_op_library_additional_deps",
     "tf_gen_op_wrapper_py",
 )
-load("//tensorflow:tensorflow.default.bzl", "pybind_extension", "tf_cuda_cc_test", "tf_custom_op_py_library", "tf_gen_op_libs")
+load("//tensorflow:tensorflow.default.bzl", "pybind_extension", "tf_cuda_cc_test", "tf_custom_op_py_strict_library", "tf_gen_op_libs")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_additional_all_protos",
     "tf_proto_library",
+)
+load(
+    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
+    "cuda_rpath_flags",
 )
 load("@local_config_tensorrt//:build_defs.bzl", "if_tensorrt")
 
@@ -31,7 +37,6 @@ package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
     features = [
-        "-layering_check",
         "-parse_headers",
     ],
     licenses = ["notice"],
@@ -65,11 +70,12 @@ cc_library(
         "stub/nvinfer_stub.cc",
         "stub/nvinfer_plugin_stub.cc",
     ]),
+    linkopts = if_tensorrt(cuda_rpath_flags("tensorrt")),
     textual_hdrs = glob(["stub/*.inc"]),
     deps = if_tensorrt([
         "@local_config_tensorrt//:tensorrt_headers",
         "//tensorflow/core:lib",
-        "//tensorflow/compiler/xla/stream_executor/platform:dso_loader",
+        "@local_xla//xla/stream_executor/platform:dso_loader",
     ]),
 )
 
@@ -92,19 +98,22 @@ tf_cuda_cc_test(
         ":use_efficient_nms_plugin": ["-DTF_TRT_USE_EFFICIENT_NMS_PLUGIN=1"],
         "//conditions:default": [],
     }),
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
         ":trt_logging",
         ":utils",
-        "//tensorflow/compiler/xla/stream_executor/gpu:gpu_init",
         "//tensorflow/core:lib",
-        "//tensorflow/core/platform:stream_executor",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:stream_executor",
+        "@local_xla//xla/stream_executor/gpu:gpu_init",
     ] + if_tensorrt([
         ":tensorrt_lib",
     ]) + select({
@@ -120,6 +129,7 @@ cc_library(
         "trt_convert_api.h",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     deps = [
         ":trt_parameters",
         ":trt_resources",
@@ -144,10 +154,13 @@ tf_cuda_cc_test(
     name = "trt_convert_api_test",
     size = "small",
     srcs = ["trt_convert_api_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
         ":common_utils",
@@ -193,6 +206,7 @@ cc_library(
         "common/utils.h",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     deps = [
         "//tensorflow/core:framework",
         "//tensorflow/core/platform:logging",
@@ -208,14 +222,15 @@ cc_library(
         "utils/trt_testutils.h",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     visibility = ["//visibility:private"],
     deps = [
         ":trt_conversion",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/framework:tensor_testutil",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/cc:cc_ops",
-        "//tensorflow/core/framework:tensor_testutil",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -223,15 +238,18 @@ tf_cuda_cc_test(
     name = "testutils_test",
     size = "small",
     srcs = ["utils/trt_testutils_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
         ":testutils",
-        "//tensorflow/core:test_main",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test_main",
         "//tensorflow/core/platform:protobuf",
     ] + if_tensorrt([
         ":tensorrt_lib",
@@ -245,8 +263,10 @@ cc_library(
         "kernels/trt_engine_op.cc",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     visibility = ["//visibility:public"],
     deps = [
+        ":common_utils",
         ":trt_allocator",
         ":trt_conversion",
         ":trt_engine_utils",
@@ -254,19 +274,18 @@ cc_library(
         ":trt_plugins",
         ":trt_resources",
         ":utils",
-        ":common_utils",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
         "//tensorflow/core:framework",
         "//tensorflow/core:gpu_headers_lib",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:lib_proto_parsing",
-        "//tensorflow/core/platform:stream_executor",
         "//tensorflow/core:stream_executor_headers_lib",
         "//tensorflow/core/common_runtime:core_cpu_lib_no_ops",
         "//tensorflow/core/grappler/costs:graph_properties",
+        "//tensorflow/core/platform:stream_executor",
         "//tensorflow/core/profiler/lib:traceme",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([
         ":tensorrt_lib",
         "@local_config_cuda//cuda:cuda_headers",
@@ -285,14 +304,14 @@ cc_library(
         ":trt_logging",
         ":trt_plugins",
         ":trt_resources",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
         "//tensorflow/core:framework",
         "//tensorflow/core:gpu_headers_lib",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core/profiler/lib:traceme",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]) + tf_custom_op_library_additional_deps(),
     alwayslink = 1,
 )
@@ -305,6 +324,8 @@ tf_cuda_cc_test(
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
         ":common_utils",
@@ -336,22 +357,20 @@ tf_cuda_cc_test(
     name = "trt_engine_op_test",
     size = "small",
     srcs = ["kernels/trt_engine_op_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
+        ":testutils",
+        ":trt_conversion",
         ":trt_op_kernels",
         ":trt_op_libs",
         ":trt_resources",
-        ":trt_conversion",
-        ":testutils",
-        "@com_google_googletest//:gtest",
-        "@com_google_absl//absl/container:inlined_vector",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-        "//third_party/eigen3",
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:function_ops",
         "//tensorflow/cc:scope",
@@ -362,22 +381,25 @@ tf_cuda_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
-        "//tensorflow/core/kernels:ops_testutil",
-        "//tensorflow/core/kernels:function_ops",
-        "//tensorflow/core/kernels:array",
         "//tensorflow/core/framework:fake_input",
+        "//tensorflow/core/kernels:array",
+        "//tensorflow/core/kernels:function_ops",
+        "//tensorflow/core/kernels:ops_testutil",
+        "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
+        "@eigen_archive//:eigen3",
     ] + if_tensorrt([
         "@local_config_cuda//cuda:cuda_headers",
     ]),
 )
 
-tf_gen_op_libs(
-    op_lib_names = [
-        "trt_engine_op",
-        "get_calibration_data_op",
-        "trt_engine_resource_ops",
-    ],
-)
+tf_gen_op_libs(op_lib_names = [
+    "trt_engine_op",
+    "get_calibration_data_op",
+    "trt_engine_resource_ops",
+])
 
 cc_library(
     name = "trt_op_libs",
@@ -401,17 +423,17 @@ tf_cuda_library(
     ],
     deps = [
         ":common_utils",
-        ":trt_logging",
-        ":utils",
         ":trt_allocator",
+        ":trt_logging",
         ":trt_parameters",
-        "@com_google_absl//absl/strings",
+        ":utils",
         "//tensorflow/core:framework",
         "//tensorflow/core:framework_headers_lib",
         "//tensorflow/core:lib",
+        "//tensorflow/core:stream_executor_headers_lib",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/profiler/lib:traceme",
-        "//tensorflow/core:stream_executor_headers_lib",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -424,29 +446,35 @@ tf_cuda_library(
         ":common_utils",
         ":logger_registry",
         ":utils",
-        "@com_google_absl//absl/strings",
         "//tensorflow/core:lib_proto_parsing",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
 tf_gen_op_wrapper_py(
     name = "trt_ops",
+    extra_py_deps = [
+        "//tensorflow/python:pywrap_tfe",
+        "//tensorflow/python/util:dispatch",
+        "//tensorflow/python/util:deprecation",
+        "//tensorflow/python/util:tf_export",
+    ],
+    py_lib_rule = py_strict_library,
     deps = [
         ":trt_engine_resource_ops_op_lib",
         ":trt_op_libs",
     ],
 )
 
-tf_custom_op_py_library(
+tf_custom_op_py_strict_library(
     name = "trt_ops_loader",
     srcs_version = "PY3",
     deps = [
         ":_pywrap_py_utils",
         ":trt_ops",
-        "//tensorflow/python:errors",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:platform",
-        "//tensorflow/python:resources",
+        "//tensorflow/python/framework:errors",
+        "//tensorflow/python/framework:for_generated_wrappers",
+        "//tensorflow/python/ops:resources",
     ],
 )
 
@@ -459,9 +487,9 @@ tf_cuda_library(
     copts = tf_copts(),
     deps = [
         ":utils",
-        "@com_google_absl//absl/strings",
-        "//tensorflow/core:lib",
         "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -477,6 +505,7 @@ tf_cuda_library(
         "utils/trt_shape_optimization_profiles.h",
         "utils/trt_tensor_proxy.h",
     ],
+    features = ["-layering_check"],
     deps = [
         ":common_utils",
         ":trt_allocator",
@@ -485,10 +514,10 @@ tf_cuda_library(
         ":utils",
         "//tensorflow/core:framework_headers_lib",
         "//tensorflow/core:framework_lite",
-        "//tensorflow/core/grappler:op_types",
-        "//tensorflow/core:graph",
         "//tensorflow/core:gpu_runtime",
+        "//tensorflow/core:graph",
         "//tensorflow/core:lib_proto_parsing",
+        "//tensorflow/core/grappler:op_types",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -537,10 +566,13 @@ tf_cuda_cc_test(
     name = "trt_shape_optimization_profiles_test",
     size = "small",
     srcs = ["utils/trt_shape_optimization_profiles_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
         ":trt_resources",
@@ -557,8 +589,8 @@ tf_cuda_library(
     ],
     copts = tf_copts(),
     deps = [
-        "@com_google_absl//absl/strings",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -569,10 +601,11 @@ tf_cuda_library(
         "convert/weights.h",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     deps = [
         ":utils",
-        "//tensorflow/core:lib",
         "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -600,12 +633,13 @@ tf_cuda_library(
     hdrs = [
         "convert/op_converter_registry.h",
     ],
+    features = ["-layering_check"],
     visibility = ["//tensorflow:__subpackages__"],
     deps = [
-        ":utils",
         ":op_converter",
-        "@com_google_absl//absl/strings",
+        ":utils",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -616,8 +650,8 @@ tf_cuda_library(
     ],
     copts = tf_copts(),
     deps = [
-        ":utils",
         ":op_converter",
+        ":utils",
         "//tensorflow/core:lib",
         "//tensorflow/core/platform:env",
         "//tensorflow/core/platform:logging",
@@ -631,6 +665,7 @@ tf_cuda_cc_test(
     name = "op_converter_registry_test",
     size = "small",
     srcs = ["convert/op_converter_registry_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_windows",
         "nomac",
@@ -650,6 +685,7 @@ tf_cuda_library(
     hdrs = [
         "convert/algorithm_selector.h",
     ],
+    features = ["-layering_check"],
     deps = [":common_utils"] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -658,6 +694,7 @@ tf_cuda_cc_test(
     srcs = [
         "convert/algorithm_selector_test.cc",
     ],
+    features = ["-layering_check"],
     deps = [
         ":algorithm_selector",
         "//tensorflow/core:test",
@@ -700,31 +737,22 @@ tf_cuda_library(
         ":use_efficient_nms_plugin": ["-DTF_TRT_USE_EFFICIENT_NMS_PLUGIN=1"],
         "//conditions:default": [],
     }),
+    features = ["-layering_check"],
     deps = [
         ":algorithm_selector",
         ":common_utils",
         ":logger_registry",
-        ":segment",
-        ":trt_allocator",
-        ":trt_parameters",
-        ":trt_plugins",
-        ":trt_logging",
-        ":trt_resources",
-        ":utils",
-        ":trt_weights",
         ":op_converter",
         ":op_converter_registry",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
+        ":segment",
+        ":trt_allocator",
+        ":trt_logging",
+        ":trt_parameters",
+        ":trt_plugins",
+        ":trt_resources",
+        ":trt_weights",
+        ":utils",
         "//tensorflow/cc:array_ops",
-        "//tensorflow/core/common_runtime:core_cpu",
-        "//tensorflow/core/grappler/clusters:cluster",
-        "//tensorflow/core/grappler/optimizers:custom_graph_optimizer",
-        "//tensorflow/core/grappler/optimizers:custom_graph_optimizer_registry",
-        "//tensorflow/core/grappler:grappler_item",
-        "//tensorflow/core/grappler:op_types",
-        "//tensorflow/core/grappler:utils",
-        "//tensorflow/core/grappler/utils:functions",
         "//tensorflow/core:framework",
         "//tensorflow/core:framework_lite",
         "//tensorflow/core:gpu_runtime",
@@ -732,13 +760,23 @@ tf_cuda_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/common_runtime:core_cpu",
         "//tensorflow/core/grappler:devices",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler:op_types",
+        "//tensorflow/core/grappler:utils",
+        "//tensorflow/core/grappler/clusters:cluster",
         "//tensorflow/core/grappler/clusters:virtual_cluster",
         "//tensorflow/core/grappler/costs:graph_properties",
+        "//tensorflow/core/grappler/optimizers:custom_graph_optimizer",
+        "//tensorflow/core/grappler/optimizers:custom_graph_optimizer_registry",
         "//tensorflow/core/grappler/optimizers:meta_optimizer",
-        "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/core/grappler/utils:functions",
         "//tensorflow/core/profiler/lib:annotated_traceme",
+        "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/tools/graph_transforms:transform_utils",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]) + tf_custom_op_library_additional_deps() + select({
         ":use_efficient_nms_plugin": [":efficient_nms_plugin"],
         "//conditions:default": [],
@@ -754,19 +792,17 @@ tf_cuda_cc_test(
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
+        ":testutils",
+        ":trt_conversion",
         ":trt_op_kernels",
         ":trt_op_libs",
-        ":trt_conversion",
-        ":testutils",
-        "@com_google_googletest//:gtest",
-        "@com_google_absl//absl/strings",
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:ops",
         "//tensorflow/cc:scope",
-        "//tensorflow/core/grappler:grappler_item",
-        "//tensorflow/core/grappler/clusters:cluster",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:direct_session",
@@ -775,6 +811,10 @@ tf_cuda_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler/clusters:cluster",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -785,37 +825,40 @@ tf_cuda_cc_test(
         "convert/convert_nodes_test.cc",
         "convert/op_converter_test.cc",
     ],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable test once TensorRT has been updated
+        "notap",
     ],
     deps = [
-        ":trt_logging",
-        ":trt_conversion",
-        ":trt_plugins",
-        ":trt_engine_utils",
-        ":utils",
         ":testutils",
-        "@com_google_googletest//:gtest",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
+        ":trt_conversion",
+        ":trt_engine_utils",
+        ":trt_logging",
+        ":trt_plugins",
+        ":utils",
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:cc_ops_internal",
         "//tensorflow/cc:ops",
         "//tensorflow/cc:scope",
-        "//tensorflow/core/grappler/costs:graph_properties",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
         "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/grappler/costs:graph_properties",
         "//tensorflow/core/kernels:function_ops",
         "//tensorflow/core/kernels:identity_op",
         "//tensorflow/core/kernels:resource_variable_ops",
-        "//tensorflow/core:test",
         "//tensorflow/core/platform:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
     ] + if_tensorrt([
         ":tensorrt_lib",
         "@local_config_cuda//cuda:cuda_headers",
@@ -828,44 +871,46 @@ tf_cuda_cc_test(
     srcs = [
         "convert/ops/quantization_ops_test.cc",
     ],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
         "nomac",
+        "notap",  # Fails w/ tensorrt 8.x
     ],
     deps = [
-        ":trt_logging",
+        ":testutils",
         ":trt_conversion",
         ":trt_convert_api",
-        ":trt_plugins",
         ":trt_engine_utils",
+        ":trt_logging",
         ":trt_op_kernels",
+        ":trt_plugins",
         ":trt_resources",
         ":utils",
-        ":testutils",
-        "//tensorflow/compiler/jit:shape_inference",
-        "@com_google_googletest//:gtest",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:cc_ops_internal",
         "//tensorflow/cc:ops",
         "//tensorflow/cc:scope",
+        "//tensorflow/compiler/jit:shape_inference",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:ops",
         "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core/framework:tensor_testutil",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
-        "//tensorflow/core/platform:status_matchers",
-        "//tensorflow/core/kernels:ops_testutil",
-        "//tensorflow/core/kernels:function_ops",
+        "//tensorflow/core/framework:tensor_testutil",
         "//tensorflow/core/kernels:array",
+        "//tensorflow/core/kernels:function_ops",
         "//tensorflow/core/kernels:nn",
+        "//tensorflow/core/kernels:ops_testutil",
         "//tensorflow/core/kernels:pooling_ops",
+        "//tensorflow/core/platform:status_matchers",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest",
     ] + if_tensorrt([
         ":tensorrt_lib",
         "@local_config_cuda//cuda:cuda_headers",
@@ -921,6 +966,7 @@ tf_cuda_cc_test(
     name = "segment_test",
     size = "small",
     srcs = ["segment/segment_test.cc"],
+    features = ["-layering_check"],
     tags = [
         "no_cuda_on_cpu_tap",
         "no_windows",
@@ -962,13 +1008,14 @@ cc_library(
         "utils/trt_tensor_proxy.h",
     ],
     copts = tf_copts(),
+    features = ["-layering_check"],
     deps = [
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/strings",
         "//tensorflow/core:framework",
         "//tensorflow/core:graph",
-        "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core:lib",
+        "//tensorflow/core:lib_proto_parsing",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/strings",
     ] + if_tensorrt([":tensorrt_lib"]),
 )
 
@@ -991,7 +1038,7 @@ tf_cuda_library(
         ":common_utils",
         ":tensorrt_lib",
         ":op_converter_registry",
-        "//tensorflow/compiler/xla/stream_executor/platform:dso_loader",
+        "@local_xla//xla/stream_executor/platform:dso_loader",
     ]),
 )
 
@@ -1003,6 +1050,10 @@ pybind_extension(
         "//conditions:default": ["//tensorflow:libtensorflow_framework.so.%s" % VERSION],
         "//tensorflow:windows": [],
     }),
+    enable_stub_generation = True,
+    pytype_srcs = [
+        "_pywrap_py_utils.pyi",
+    ],
     static_deps = [
         "@bazel_tools//:__subpackages__",
         "@boringssl//:__subpackages__",
@@ -1027,24 +1078,26 @@ pybind_extension(
         "@llvm_zlib//:__subpackages__",
         "@local_config_cuda//:__subpackages__",
         "@local_config_git//:__subpackages__",
-        "@local_config_python//:__subpackages__",
         "@local_config_rocm//:__subpackages__",
         "@local_config_tensorrt//:__subpackages__",
         "@local_execution_config_platform//:__subpackages__",
+        "@ml_dtypes//:__subpackages__",
         "@nsync//:__subpackages__",
         "@platforms//:__subpackages__",
         "@pybind11//:__subpackages__",
         "@snappy//:__subpackages__",
         "//:__subpackages__",
         "@zlib//:__subpackages__",
+        "@local_tsl//tsl:__subpackages__",
+        "@local_xla//xla:__subpackages__",
     ],
     deps = [
         ":common_utils",
         ":py_utils",
-        "//tensorflow/compiler/xla/stream_executor",
         "//tensorflow/core/platform:env",
         "//tensorflow/core/platform:logging",
         "//tensorflow/core/platform:status",
+        "@local_xla//xla/stream_executor",
         "@pybind11",
     ],
 )

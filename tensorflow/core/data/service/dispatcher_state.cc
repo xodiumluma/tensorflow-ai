@@ -85,6 +85,9 @@ Status DispatcherState::Apply(const Update& update) {
     case Update::kSnapshot:
       Snapshot(update.snapshot());
       break;
+    case Update::kCompressionDisabledAtRuntime:
+      CompressionDisabledAtRuntime(update.compression_disabled_at_runtime());
+      break;
     case Update::UPDATE_TYPE_NOT_SET:
       return errors::Internal("Update type not set.");
   }
@@ -177,7 +180,8 @@ void DispatcherState::ProduceSplit(const ProduceSplitUpdate& produce_split) {
   DCHECK(iteration->distributed_epoch_state.has_value());
   DistributedEpochState& state = iteration->distributed_epoch_state.value();
   int64_t provider_index = produce_split.split_provider_index();
-  DCHECK_EQ(produce_split.repetition(), state.repetitions[provider_index]);
+  DCHECK_GE(produce_split.repetition(), state.repetitions[provider_index]);
+  state.repetitions[provider_index] = produce_split.repetition();
   if (produce_split.finished()) {
     state.repetitions[provider_index]++;
     state.indices[provider_index] = 0;
@@ -470,6 +474,23 @@ StatusOr<int64_t> DispatcherState::GetWorkerIndex(
 
 void DispatcherState::Snapshot(const SnapshotUpdate& snapshot) {
   snapshot_paths_.insert(snapshot.path());
+}
+
+void DispatcherState::CompressionDisabledAtRuntime(
+    const CompressionDisabledAtRuntimeUpdate& compression_disabled_at_runtime) {
+  compression_disabled_at_runtime_.insert({
+      compression_disabled_at_runtime.dataset_id(),
+      compression_disabled_at_runtime.compression_disabled(),
+  });
+}
+
+std::optional<bool> DispatcherState::CompressionDisabledAtRuntime(
+    const std::string& dataset_id) const {
+  if (auto it = compression_disabled_at_runtime_.find(dataset_id);
+      it != compression_disabled_at_runtime_.end()) {
+    return it->second;
+  }
+  return std::nullopt;
 }
 
 }  // namespace data

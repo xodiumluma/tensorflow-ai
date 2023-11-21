@@ -26,7 +26,7 @@ limitations under the License.
 #include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/stringpiece.h"
-#include "tensorflow/tsl/platform/regexp.h"
+#include "tsl/platform/regexp.h"
 
 namespace tensorflow {
 namespace checkpoint {
@@ -36,7 +36,7 @@ const absl::string_view kCheckpointCallbackManagerResourceName =
 
 namespace {
 
-const absl::string_view kCheckpointFileRegex = "^part-[0-9]*-of-[0-9]*$";
+const absl::string_view kCheckpointFileRegex = "^part-[0-9]*-of-[0-9]*";
 const absl::string_view kCheckpointTempDirRegex = "-[0-9]*_temp$";
 const absl::string_view kCheckpointDirRegex = "-[0-9]*$";
 const absl::string_view kCheckpointTempDirSuffix = "_temp";
