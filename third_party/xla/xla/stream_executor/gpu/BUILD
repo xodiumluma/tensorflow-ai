@@ -119,6 +119,8 @@ cc_library(
         "@local_tsl//tsl/platform:statusor",
     ] + if_cuda_is_configured([
         "//xla/stream_executor/cuda:cuda_conditional_kernels",
+    ]) + if_rocm_is_configured([
+        "//xla/stream_executor/rocm:hip_conditional_kernels",
     ]),
 )
 
@@ -389,7 +391,9 @@ cc_library(
     srcs = if_gpu_is_configured(["redzone_allocator.cc"]),
     hdrs = if_gpu_is_configured(["redzone_allocator.h"]),
     copts = tsl_copts(),
-    local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
+    local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
+        "TENSORFLOW_USE_ROCM=1",
+    ]),
     visibility = ["//visibility:public"],
     deps = if_gpu_is_configured([
         ":asm_compiler",

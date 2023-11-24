@@ -24,6 +24,7 @@ limitations under the License.
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/platform.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
@@ -99,6 +100,14 @@ class CommandBuffer {
       Mode mode = Mode::kPrimary);
 
   //===--------------------------------------------------------------------===//
+  // Command buffer properties
+  //===--------------------------------------------------------------------===//
+
+  // Returns true if command buffer on a given platform supports conditional
+  // commands (If, IfThen, While).
+  static bool SupportsConditionalCommands(const Platform* platform);
+
+  //===--------------------------------------------------------------------===//
   // Command buffer API
   //===--------------------------------------------------------------------===//
 
@@ -113,11 +122,22 @@ class CommandBuffer {
   tsl::Status MemcpyDeviceToDevice(DeviceMemoryBase* dst,
                                    const DeviceMemoryBase& src, uint64_t size);
 
-  // Adds a conditional operation that will execute a command buffer constructed
-  // by `then_builder` if predicate is true. Builder should not call `Update` or
-  // `Finalize` on command buffer argument, parent command buffer is responsible
-  // for updating and finalizing conditional command buffers.
-  tsl::Status If(DeviceMemory<bool> pred, Builder then_builder);
+  //--------------------------------------------------------------------------//
+  // Command buffer condtitional commands API
+  //--------------------------------------------------------------------------//
+
+  // Adds a conditional operation that will run a command buffer constructed by
+  // `then_builder` if `predicate` value is `true`.
+  tsl::Status If(StreamExecutor* executor, DeviceMemory<bool> pred,
+                 Builder then_builder);
+
+  // Adds a conditional operation that will run a command buffer constructed by
+  // `then_builder` if `predicate` value is `true`, or a command buffer
+  // constructed by `else_builder` if `predicate` is `false`.
+  tsl::Status IfElse(StreamExecutor* executor, DeviceMemory<bool> pred,
+                     Builder then_builder, Builder else_builder);
+
+  //--------------------------------------------------------------------------//
 
   // Finalizes command buffer and makes it executable. Once command buffer is
   // finalized no commands can be added to it.
@@ -140,8 +160,6 @@ class CommandBuffer {
   // Returns command buffer state.
   State state() const;
 
-  StreamExecutor* executor() const { return executor_; }
-
   //===--------------------------------------------------------------------===//
   // Semi-internal APIs
   //===--------------------------------------------------------------------===//
@@ -154,15 +172,12 @@ class CommandBuffer {
   // Wraps platform-specific command buffer implementation into a top-level
   // StreamExecutor command buffer.
   static CommandBuffer Wrap(
-      StreamExecutor* executor,
       std::unique_ptr<internal::CommandBufferInterface> implementation);
 
  private:
-  CommandBuffer(
-      StreamExecutor* executor,
+  explicit CommandBuffer(
       std::unique_ptr<internal::CommandBufferInterface> implementation);
 
-  StreamExecutor* executor_;
   std::unique_ptr<internal::CommandBufferInterface> implementation_;
 
   CommandBuffer(const CommandBuffer&) = delete;

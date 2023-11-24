@@ -23,6 +23,7 @@ limitations under the License.
 #include "absl/functional/any_invocable.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
@@ -33,6 +34,7 @@ limitations under the License.
 #include "xla/service/hlo_graph_dumper.h"
 #include "xla/service/hlo_proto_util.h"
 #include "xla/status.h"
+#include "xla/statusor.h"
 #include "xla/util.h"
 #include "tsl/lib/io/zlib_compression_options.h"
 #include "tsl/lib/io/zlib_outputbuffer.h"
@@ -443,7 +445,6 @@ static std::vector<std::string> DumpHloModuleImpl(
         pb, opts, opts.dump_compress_protos));
   }
 
-
   if (opts.dump_as_dot) {
     file_paths.push_back(DumpToFileInDirImpl(
         StrFormat("%s.dot", filename),
@@ -709,6 +710,11 @@ void DumpHloModuleIfEnabled(const HloModule& module,
 bool DumpingEnabledForHloModule(string_view hlo_module_name,
                                 const DebugOptions& opts) {
   return CanonicalDebugOptions(opts).should_dump_module(hlo_module_name);
+}
+
+bool DumpingEnabledForHloPass(string_view hlo_pass_name,
+                              const DebugOptions& opts) {
+  return CanonicalDebugOptions(opts).should_dump_pass(hlo_pass_name);
 }
 
 bool DumpingToStdout(const DebugOptions& opts) {

@@ -16,12 +16,12 @@ limitations under the License.
 #include "tensorflow/lite/simple_memory_arena.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "tensorflow/lite/core/c/common.h"
@@ -54,15 +54,21 @@ bool ResizableAlignedBuffer::Resize(size_t new_size) {
   OnTfLiteArenaAlloc(subgraph_index_, reinterpret_cast<std::uintptr_t>(this),
                      new_allocation_size);
 #endif
-  auto new_buffer = std::unique_ptr<char[]>(new char[new_allocation_size]);
+  char* new_buffer = reinterpret_cast<char*>(std::malloc(new_allocation_size));
+#if defined(__clang__)
+#if __has_feature(memory_sanitizer)
+  memset(new_buffer, 0, new_allocation_size);
+#endif
+#endif
   char* new_aligned_ptr = reinterpret_cast<char*>(
-      AlignTo(alignment_, reinterpret_cast<std::uintptr_t>(new_buffer.get())));
+      AlignTo(alignment_, reinterpret_cast<std::uintptr_t>(new_buffer)));
   if (new_size > 0 && data_size_ > 0) {
     // Copy data when both old and new buffers are bigger than 0 bytes.
     const size_t copy_amount = std::min(new_size, data_size_);
     std::memcpy(new_aligned_ptr, aligned_ptr_, copy_amount);
   }
-  buffer_ = std::move(new_buffer);
+  std::free(buffer_);
+  buffer_ = new_buffer;
   aligned_ptr_ = new_aligned_ptr;
 #ifdef TF_LITE_TENSORFLOW_PROFILER
   if (data_size_ > 0) {
@@ -79,11 +85,15 @@ bool ResizableAlignedBuffer::Resize(size_t new_size) {
 }
 
 void ResizableAlignedBuffer::Release() {
+  if (buffer_ == nullptr) {
+    return;
+  }
 #ifdef TF_LITE_TENSORFLOW_PROFILER
   OnTfLiteArenaDealloc(subgraph_index_, reinterpret_cast<std::uintptr_t>(this),
                        RequiredAllocationSize(data_size_));
 #endif
-  buffer_.reset();
+  std::free(buffer_);
+  buffer_ = nullptr;
   data_size_ = 0;
   aligned_ptr_ = nullptr;
 }
@@ -199,8 +209,8 @@ TfLiteStatus SimpleMemoryArena::ResolveAlloc(
     char** output_ptr) {
   TF_LITE_ENSURE(context, committed_);
   TF_LITE_ENSURE(context, output_ptr != nullptr);
-  TF_LITE_ENSURE(context, underlying_buffer_.GetAllocationSize() >=
-                              (alloc.offset + alloc.size));
+  TF_LITE_ENSURE(
+      context, underlying_buffer_.GetDataSize() >= (alloc.offset + alloc.size));
   if (alloc.size == 0) {
     *output_ptr = nullptr;
   } else {

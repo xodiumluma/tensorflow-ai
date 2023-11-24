@@ -42,7 +42,7 @@ CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) = default;
       std::unique_ptr<internal::CommandBufferInterface> command_buffer,
       executor->implementation()->GetCommandBufferImplementation(mode));
 
-  CommandBuffer cmd(executor, std::move(command_buffer));
+  CommandBuffer cmd(std::move(command_buffer));
   return cmd;
 }
 
@@ -71,6 +71,17 @@ CommandBuffer& CommandBuffer::operator=(CommandBuffer&&) = default;
   return command_buffer;
 }
 
+/*static*/ bool CommandBuffer::SupportsConditionalCommands(
+    const Platform* platform) {
+  // TODO(ezhulenev): We should extend a Platform with a way to query
+  // implemented StreamExecutor features, for now we know that only CUDA
+  // platform supports conditional commands in command buffers.
+#if defined(STREAM_EXECUTOR_CUDA_ENABLE_GRAPH_CONDITIONAL)
+  return platform->Name() == "CUDA";
+#endif
+  return false;
+}
+
 const internal::CommandBufferInterface* CommandBuffer::implementation() const {
   return implementation_.get();
 }
@@ -80,15 +91,13 @@ internal::CommandBufferInterface* CommandBuffer::implementation() {
 }
 
 /*static*/ CommandBuffer CommandBuffer::Wrap(
-    StreamExecutor* executor,
     std::unique_ptr<internal::CommandBufferInterface> implementation) {
-  return CommandBuffer(executor, std::move(implementation));
+  return CommandBuffer(std::move(implementation));
 }
 
 CommandBuffer::CommandBuffer(
-    StreamExecutor* executor,
     std::unique_ptr<internal::CommandBufferInterface> implementation)
-    : executor_(executor), implementation_(std::move(implementation)) {}
+    : implementation_(std::move(implementation)) {}
 
 tsl::Status CommandBuffer::Launch(const ThreadDim& threads,
                                   const BlockDim& blocks, const Kernel& kernel,
@@ -106,8 +115,16 @@ tsl::Status CommandBuffer::MemcpyDeviceToDevice(DeviceMemoryBase* dst,
   return implementation_->MemcpyDeviceToDevice(dst, src, size);
 }
 
-tsl::Status CommandBuffer::If(DeviceMemory<bool> pred, Builder then_builder) {
-  return implementation_->If(executor_, pred, std::move(then_builder));
+tsl::Status CommandBuffer::If(StreamExecutor* executor, DeviceMemory<bool> pred,
+                              Builder then_builder) {
+  return implementation_->If(executor, pred, std::move(then_builder));
+}
+
+tsl::Status CommandBuffer::IfElse(StreamExecutor* executor,
+                                  DeviceMemory<bool> pred, Builder then_builder,
+                                  Builder else_builder) {
+  return implementation_->IfElse(executor, pred, std::move(then_builder),
+                                 std::move(else_builder));
 }
 
 CommandBuffer::Mode CommandBuffer::mode() const {
