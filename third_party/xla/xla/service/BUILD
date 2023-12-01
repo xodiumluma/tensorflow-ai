@@ -4101,6 +4101,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//xla:shape_util",
+        "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:util",
@@ -4294,6 +4295,7 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -5509,6 +5511,7 @@ cc_library(
         "//xla/service/gpu:cublas_cudnn",
         "//xla/stream_executor",
         "//xla/stream_executor:dnn",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
@@ -7444,8 +7447,33 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":compilation_environments",
+        "//xla:parse_flags_from_env",
+        "//xla:statusor",
+        "//xla:util",
         "//xla:xla_proto_cc",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:protobuf",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/util:command_line_flags",
+    ],
+)
+
+xla_cc_test(
+    name = "gpu_compilation_environment_test",
+    size = "small",
+    srcs = ["gpu_compilation_environment_test.cc"],
+    deps = [
+        ":compilation_environments",
+        ":gpu_compilation_environment",
+        "//xla:parse_flags_from_env",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 

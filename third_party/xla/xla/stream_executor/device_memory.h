@@ -26,6 +26,9 @@ limitations under the License.
 
 #include <stddef.h>
 
+#include <cstddef>
+#include <cstdint>
+
 #include "xla/stream_executor/platform/port.h"
 
 namespace stream_executor {
@@ -54,6 +57,7 @@ class DeviceMemoryBase {
   // Returns whether the backing memory is the null pointer.
   // A `== nullptr` convenience method is also provided.
   bool is_null() const { return opaque_ == nullptr; }
+
   bool operator==(std::nullptr_t other) const { return is_null(); }
   bool operator!=(std::nullptr_t other) const { return !is_null(); }
 
@@ -96,7 +100,13 @@ class DeviceMemoryBase {
   }
 
  private:
-  void *opaque_;  // Platform-dependent value representing allocated memory.
+  // Platform-dependent value representing allocated memory.
+  //
+  // User may also constructs the object with `kExternalAllocationMarker`
+  // address and non-zero size, which indicates the case that buffer is
+  // allocated externally (for Gpu backends we use it to allocate memory via
+  // command buffer APIs).
+  void *opaque_;
   uint64_t size_;         // Size in bytes of this allocation.
   uint64_t payload_ = 0;  // Payload data associated with this allocation.
 };
@@ -155,26 +165,6 @@ class DeviceMemory final : public DeviceMemoryBase {
   // In order to specify the desire to use byte size instead of element count
   // explicitly, use MakeFromByteSize.
   DeviceMemory(void *opaque, uint64_t size) : DeviceMemoryBase(opaque, size) {}
-};
-
-// A class to encapsulate the type and size of a dynamic shared memory
-// buffer. Because the buffer exists solely on the device and is not copyable
-// to the host, memory objects of this type do not maintain buffer pointers
-// on the host.
-template <typename ElemT>
-class SharedDeviceMemory final : public DeviceMemoryBase {
- public:
-  explicit SharedDeviceMemory(uint64_t elem_count)
-      : DeviceMemoryBase(nullptr, elem_count * kElemSize) {}
-
-  static constexpr size_t kElemSize = sizeof(ElemT);
-
-  // Returns the number of elements of type ElemT that constitute this
-  // allocation.
-  uint64_t ElementCount() const { return size() / kElemSize; }
-
-  // Returns whether this is a single-element allocation.
-  bool IsScalar() const { return ElementCount() == 1; }
 };
 
 // Host-side representation of packed-and-aligned vector datatypes on the device

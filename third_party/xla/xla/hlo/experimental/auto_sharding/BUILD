@@ -2,6 +2,7 @@
 
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//xla:xla.bzl", "auto_sharding_deps", "auto_sharding_solver_deps", "xla_cc_binary", "xla_cc_test")
+load("@local_tsl//tsl/platform:build_config.bzl", "tf_proto_library")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -21,6 +22,7 @@ cc_library(
     srcs = [
         "auto_sharding.cc",
         "auto_sharding_dot_handler.cc",
+        "auto_sharding_strategy.cc",
     ],
     hdrs = [
         "auto_sharding.h",
@@ -80,6 +82,7 @@ cc_library(
     srcs = ["auto_sharding_solver_impl.cc"],
     visibility = ["//visibility:public"],
     deps = [
+        ":auto_sharding_proto_cc",
         ":auto_sharding_strategy",
         "@com_google_ortools//ortools/linear_solver",
     ],
@@ -90,6 +93,7 @@ cc_library(
     srcs = ["auto_sharding_solver.cc"],
     visibility = ["//visibility:public"],
     deps = [
+        ":auto_sharding_proto_cc",
         ":auto_sharding_strategy",
         "//xla:statusor",
         "//xla:util",
@@ -116,6 +120,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":auto_sharding_proto_cc",
         "//xla:shape_util",
         "//xla:statusor",
         "//xla/hlo/ir:hlo",
@@ -273,6 +278,12 @@ xla_cc_binary(
     ],
 )
 
+tf_proto_library(
+    name = "auto_sharding_proto",
+    srcs = ["auto_sharding.proto"],
+    visibility = ["//visibility:public"],
+)
+
 build_test(
     name = "auto_sharding_runner_build_test",
     targets = [
@@ -291,6 +302,7 @@ xla_cc_test(
     deps = [
         ":auto_sharding",
         ":auto_sharding_option",
+        ":auto_sharding_proto_cc",
         ":auto_sharding_util",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_matchers",
@@ -313,6 +325,7 @@ xla_cc_test(
         "no_oss",
     ],
     deps = [
+        ":auto_sharding_proto_cc",
         ":auto_sharding_solver",
         ":auto_sharding_strategy",
         "//xla/tests:xla_internal_test_main",

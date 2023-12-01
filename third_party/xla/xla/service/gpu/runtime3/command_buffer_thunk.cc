@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/service/gpu/runtime3/command_buffer_thunk.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "absl/synchronization/mutex.h"
@@ -26,7 +27,7 @@ limitations under the License.
 #include "xla/statusor.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
-#include "xla/stream_executor/stream_executor_pimpl.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -75,10 +76,10 @@ Status CommandBufferThunk::ExecuteOnStream(const ExecuteParams& params) {
   TF_ASSIGN_OR_RETURN(ExecutorCommandBuffer * cmd_buffer,
                       GetOrCreateCommandBuffer(executor));
 
-  CommandBufferCmd::RecordParams record_params = {executor,
-                                                  params.buffer_allocations};
-
   absl::MutexLock lock(&cmd_buffer->mutex);
+
+  CommandBufferCmd::RecordParams record_params = {
+      executor, params.buffer_allocations, &cmd_buffer->allocations};
 
   if (cmd_buffer->ShouldUpdateCommandBuffer(commands_, record_params)) {
     TF_RETURN_IF_ERROR(

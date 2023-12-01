@@ -33,7 +33,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/backend_configs.pb.h"
-#include "xla/service/gpu/gemm_rewriter_triton.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/matmul_utils.h"
@@ -1743,6 +1742,32 @@ ENTRY e {
                           ParseAndReturnVerifiedModule(kHloText));
 
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/2e-3, /*arel=*/2e-3}));
+}
+
+TEST_F(TritonGemmLevel2Test, FuseConcatenation) {
+  const std::string kHloText = R"(
+e {
+  p0 = s8[153,1536] parameter(0)
+  p1 = s8[153,128] parameter(1)
+  p2 = s8[153,128] parameter(2)
+  cat = s8[153,1792] concatenate(p0, p1, p2), dimensions={1}
+  cvt = bf16[153,1792] convert(cat)
+  p3 = bf16[16,153] parameter(3)
+  ROOT d = bf16[16,1792] dot(p3, cvt),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(kHloText));
+
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter(), m::Parameter(),
+                           m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-3,
+                                                /*arel=*/1e-3}));
 }
 
 TEST_F(TritonGemmLevel2TestAny, MinimumHandlesNaNsOnTheLeft) {

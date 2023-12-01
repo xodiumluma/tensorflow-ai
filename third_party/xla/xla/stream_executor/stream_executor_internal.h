@@ -141,6 +141,14 @@ class CommandBufferInterface {
                                            const DeviceMemoryBase& src,
                                            uint64_t size) = 0;
 
+  // Adds a memset node to the command buffer.
+  virtual tsl::Status Memset(DeviceMemoryBase* dst,
+                             CommandBuffer::BitPattern bit_pattern,
+                             size_t num_elements) = 0;
+
+  // Adds a device memory allocation node to the command buffer.
+  virtual tsl::StatusOr<DeviceMemoryBase> Allocate(size_t bytes) = 0;
+
   // For all conditional command APIs defined below, nested command buffers
   // constructed for conditional branches owned by *this and should never be
   // finalized or updated inside builders.
@@ -157,6 +165,37 @@ class CommandBufferInterface {
                              DeviceMemory<bool> predicate,
                              CommandBuffer::Builder then_builder,
                              CommandBuffer::Builder else_builder) = 0;
+
+  // Adds a conditional operation that will run a command buffer constructed by
+  // the `branches` builder at `index`. If `index` is out of range, then it will
+  // run a conditional command buffer constructed by the last builder.
+  //
+  // See: https://github.com/openxla/stablehlo/blob/main/docs/spec.md#case
+  virtual tsl::Status Case(StreamExecutor* executor,
+                           DeviceMemory<int32_t> index,
+                           std::vector<CommandBuffer::Builder> branches) = 0;
+
+  // Adds a conditional operation that will run a command buffer constructed by
+  // the `body_builder` exactly `num_iteration` times.
+  virtual tsl::Status For(StreamExecutor* executor, int32_t num_iteration,
+                          DeviceMemory<int32_t> loop_index,
+                          CommandBuffer::Builder body_builder) = 0;
+
+  // Adds a conditional operation that will execute a command buffer constructed
+  // by the `cond_builder` that must update `pred` value, and then depending on
+  // the value might execute command buffer constructed by `body_builder` and
+  // `cond_builder`. Will continue while `pred` value is `true`.
+  //
+  // In pseudocode:
+  //
+  //   cond_builder()
+  //   while(pred):
+  //     body_builder()
+  //     cond_builder()
+  //
+  virtual tsl::Status While(StreamExecutor* executor, DeviceMemory<bool> pred,
+                            CommandBuffer::Builder cond_builder,
+                            CommandBuffer::Builder body_builder) = 0;
 
   // Finalizes command buffer and makes it executable. Once command buffer is
   // finalized no commands can be added to it.
@@ -248,6 +287,8 @@ class StreamExecutorInterface {
   virtual std::optional<std::string> MakeDeviceDescriptionStr() const {
     return std::nullopt;
   }
+
+  virtual int device_ordinal() const { return -1; }
 
   virtual tsl::Status GetKernel(const MultiKernelLoaderSpec& spec,
                                 Kernel* kernel) {

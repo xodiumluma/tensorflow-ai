@@ -29,13 +29,13 @@ limitations under the License.
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
+#include "xla/service/gpu/runtime3/command_buffer_allocations.h"
 #include "xla/service/gpu/thunk.h"
 #include "xla/status.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/stream_executor/stream_executor_pimpl.h"
 
 namespace xla::gpu {
 
@@ -54,9 +54,15 @@ class CommandBufferCmd {
   // buffer. For example when we emit command buffer cmd sequence from an HLO
   // module, we only know the buffer slices required for HLO operations, but the
   // concrete device pointers become available only at run time.
+  //
+  // For allocations that performed through command buffer Allocate command, the
+  // target addresses are tracked by command buffer runtime. To record command
+  // that consumes buffers allocated inside command buffer, user should specify
+  // the target address as se::DeviceMemoryBase{nullptr, size}.
   struct RecordParams {
     se::StreamExecutor* executor;
     const BufferAllocations* buffer_allocations;
+    CommandBufferAllocations* command_buffer_allocations;
   };
 
   // Prepares a command for recording on a given executor. We split it into a
@@ -204,6 +210,24 @@ class IfCmd : public CommandBufferCmd {
  private:
   BufferAllocation::Slice pred_;
   CommandBufferCmdSequence then_cmds_;
+};
+
+//===----------------------------------------------------------------------===//
+// AllocateCmd
+//===----------------------------------------------------------------------===//
+
+class AllocateCmd : public CommandBufferCmd {
+ public:
+  explicit AllocateCmd(BufferAllocation* allocation);
+
+  // After calling this function, the allocated memory address is updated to
+  Status Record(const RecordParams& params,
+                se::CommandBuffer* command_buffer) override;
+
+  Slices slices() override;
+
+ private:
+  BufferAllocation* allocation_;
 };
 
 //===----------------------------------------------------------------------===//

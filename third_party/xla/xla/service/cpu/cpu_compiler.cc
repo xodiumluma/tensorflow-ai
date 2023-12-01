@@ -70,6 +70,7 @@ limitations under the License.
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"  // from @llvm-project
 #include "mlir/Dialect/Linalg/IR/Linalg.h"  // from @llvm-project
+#include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"  // from @llvm-project
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"  // from @llvm-project
 #include "mlir/Dialect/SCF/IR/SCF.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
@@ -114,7 +115,6 @@ limitations under the License.
 #include "xla/runtime/executable.h"
 #include "xla/runtime/jit_executable.h"
 #include "xla/service/algebraic_simplifier.h"
-#include "xla/service/all_gather_decomposer.h"
 #include "xla/service/all_reduce_promotion.h"
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batch_dot_simplification.h"
@@ -254,22 +254,22 @@ void LoadMLIRDialects(mlir::MLIRContext& context) {
                       xla::runtime::RuntimeDialect>();
   mlir::registerBuiltinDialectTranslation(context);
   mlir::registerLLVMDialectTranslation(context);
+
+  mlir::DialectRegistry registry;
+  mlir::memref::registerAllocationOpInterfaceExternalModels(registry);
+  context.appendDialectRegistry(registry);
 }
 
 xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
     llvm::Triple target_triple, llvm::StringRef cpu_name) {
   xla::cpu::HloXlaRuntimePipelineOptions options;
-  options.enable_tiling_and_fusion =
-      xla::GetDebugOptionsFromFlags().xla_cpu_enable_mlir_tiling_and_fusion();
+  options.enable_tiling_and_fusion = false;
   if (xla::GetDebugOptionsFromFlags().xla_cpu_enable_custom_matmul_tiling()) {
     options.matmul_tile_sizes = {
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_m_dim(),
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_n_dim(),
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_k_dim()};
   }
-  options.experimental_deallocation =
-      xla::GetDebugOptionsFromFlags()
-          .xla_cpu_enable_experimental_deallocation();
   options.enable_avx2 = [&] {
     // Derive whether this is an x86 CPU with AVX2 enabled.
     if (!target_triple.isX86()) return false;
@@ -280,7 +280,6 @@ xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
   options.cpu_name = cpu_name;
   if (xla::GetDebugOptionsFromFlags().xla_cpu_enable_mlir_fusion_outlining()) {
     options.enable_fusion_outlining = true;
-    options.experimental_deallocation = true;
   }
   return options;
 }
@@ -685,7 +684,6 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   pipeline.AddPass<QrExpander>();
   pipeline.AddPass<EighExpander>();
   pipeline.AddPass<TriangularSolveExpander>();
-  pipeline.AddPass<AllGatherDecomposer>();
   pipeline.AddPass<AllToAllDecomposer>();
   pipeline.AddPass<ReduceScatterDecomposer>();
   pipeline.AddPass<StochasticConvertDecomposer>();
@@ -699,8 +697,7 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
   // AOT compiled code runs in single thread.
   if (!is_aot_compile) {
-    // Temporarily disabling oneDNN rewriter because it causes JAX regression.
-    // pipeline.AddPass<OneDnnRewriter>();
+    pipeline.AddPass<OneDnnRewriter>();
   }
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 
