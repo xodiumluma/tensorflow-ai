@@ -33,6 +33,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
@@ -127,6 +128,7 @@ limitations under the License.
 #include "xla/service/gpu/copy_fusion.h"
 #include "xla/service/gpu/custom_fusion_rewriter.h"
 #include "xla/service/gpu/dot_dimension_sorter.h"
+#include "xla/service/gpu/dot_operand_converter.h"
 #include "xla/service/gpu/fusion_merger_triton.h"
 #include "xla/service/gpu/fusion_pipeline.h"
 #include "xla/service/gpu/fusion_wrapper.h"
@@ -191,6 +193,7 @@ limitations under the License.
 #include "xla/service/loop_schedule_linearizer.h"
 #include "xla/service/operand_upcaster.h"
 #include "xla/service/optimization_barrier_expander.h"
+#include "xla/service/optimize_input_output_buffer_alias.h"
 #include "xla/service/qr_expander.h"
 #include "xla/service/real_imag_expander.h"
 #include "xla/service/reduce_decomposer.h"
@@ -227,14 +230,10 @@ limitations under the License.
 #include "xla/status.h"
 #include "xla/status_macros.h"
 #include "xla/statusor.h"
-#if GOOGLE_CUDA
-#include "xla/stream_executor/cuda/cuda_platform_id.h"
-#elif TENSORFLOW_USE_ROCM
-#include "xla/stream_executor/rocm/rocm_platform_id.h"
-#endif
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_description.pb.h"
 #include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/gpu/gpu_driver.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/translate/mhlo_to_lhlo_with_xla/mhlo_to_lhlo_with_xla.h"
 #include "xla/util.h"
@@ -245,10 +244,21 @@ limitations under the License.
 #include "tsl/platform/cpu_info.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/logging.h"
 #include "tsl/platform/numbers.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/threadpool.h"
 #include "tsl/profiler/lib/traceme.h"
+
+#if GOOGLE_CUDA
+#include "xla/stream_executor/cuda/cuda_platform_id.h"
+#elif TENSORFLOW_USE_ROCM
+#include "xla/stream_executor/rocm/rocm_platform_id.h"
+#endif
+
+#if GOOGLE_CUDA
+#include "third_party/gpus/cuda/include/cuda.h"
+#endif
 
 #ifdef PLATFORM_GOOGLE
 #include "xla/hlo/experimental/auto_sharding/auto_sharding.h"
@@ -275,7 +285,7 @@ StatusOr<AutotuneConfig> GetAutotuneConfig(
   return deviceless_config;
 }
 
-se::GpuComputeCapability GetGpuVersion(se::StreamExecutor* stream_exec) {
+se::GpuComputeCapability GetGpuVersion(const se::StreamExecutor* stream_exec) {
   return stream_exec->GetDeviceDescription().gpu_compute_capability();
 }
 
@@ -325,7 +335,7 @@ class GpuAotCompilationResult : public AotCompilationResult {
   }
 
   StatusOr<std::unique_ptr<Executable>> LoadExecutable(
-      Compiler* compiler, se::StreamExecutor* executor) override;
+      Compiler* compiler, const se::StreamExecutor* executor) const override;
 
  private:
   XlaRuntimeGpuExecutableProto xla_runtime_gpu_executable_;
@@ -333,8 +343,8 @@ class GpuAotCompilationResult : public AotCompilationResult {
 
 class GpuThunkAotCompilationResult : public AotCompilationResult {
  public:
-  GpuThunkAotCompilationResult(HloModule* hlo_module,
-                               BufferAssignment* buffer_assignment,
+  GpuThunkAotCompilationResult(const HloModule* hlo_module,
+                               const BufferAssignment* buffer_assignment,
                                std::string_view asm_text,
                                absl::Span<const uint8_t> binary) {
     *proto_.mutable_hlo_module() = hlo_module->ToProto();
@@ -361,7 +371,7 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
   }
 
   StatusOr<std::unique_ptr<Executable>> LoadExecutable(
-      Compiler* compiler, se::StreamExecutor* stream_exec) override;
+      Compiler* compiler, const se::StreamExecutor* stream_exec) const override;
 
  private:
   CompilationResultProto proto_;
@@ -370,7 +380,7 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
 }  // end anonymous namespace
 
 StatusOr<std::unique_ptr<Executable>> GpuAotCompilationResult::LoadExecutable(
-    Compiler* compiler, se::StreamExecutor* executor) {
+    Compiler* compiler, const se::StreamExecutor* executor) const {
   XlaRuntimeExecutableProto xla_runtime_executable =
       xla_runtime_gpu_executable_.xla_runtime_executable();
   TF_ASSIGN_OR_RETURN(HloModuleConfig hlo_module_config,
@@ -396,12 +406,12 @@ StatusOr<std::unique_ptr<Executable>> GpuAotCompilationResult::LoadExecutable(
       xla_runtime_executable.mlir_module(), GetDebugOptionsFromFlags(),
       xla_runtime_gpu_executable_.gpu_asm_text(),
       xla_runtime_gpu_executable_.gpu_binary(), std::move(constants),
-      GetGpuVersion(executor), executor);
+      GetGpuVersion(executor));
 }
 
 StatusOr<std::unique_ptr<Executable>>
-GpuThunkAotCompilationResult::LoadExecutable(Compiler* compiler,
-                                             se::StreamExecutor* stream_exec) {
+GpuThunkAotCompilationResult::LoadExecutable(
+    Compiler* compiler, const se::StreamExecutor* stream_exec) const {
   // Recreate HloModule from proto.
   TF_ASSIGN_OR_RETURN(HloModuleConfig hlo_module_config,
                       HloModule::CreateModuleConfigFromProto(
@@ -496,7 +506,7 @@ GpuThunkAotCompilationResult::LoadExecutable(Compiler* compiler,
           /*buffer_assignment=*/std::move(buffer_assignment),
           /*enable_persistent_temp_buffers=*/enable_persistent_temp_buffers,
           /*debug_buffer_assignment_show_max=*/debug_buffer_assignment_show_max,
-          /*debug_module=*/std::unique_ptr<HloModule>(),
+          /*debug_module=*/std::move(hlo_module),
           /*enable_debug_info_manager=*/true}));
   return executable;
 }
@@ -539,7 +549,21 @@ Status GpuCompiler::OptimizeHloModule(HloModule* hlo_module,
                                       se::StreamExecutor* stream_exec,
                                       const CompileOptions& options,
                                       const TargetConfig& gpu_target_config) {
+  CHECK(!hlo_module->has_schedule())
+      << "\nThe current HLO module " << hlo_module->name()
+      << " is scheduled and optimized. \n"
+      << "It is not expected to run optimization passes again.\nPlease use "
+      << "RunAndCompareNoHloPasses() or RunAndCompareTwoModules() instead of "
+      << "RunAndCompare()\nif running unit tests as they set"
+      << " run_hlo_passes=false.";
+
   const DebugOptions& debug_options = hlo_module->config().debug_options();
+
+  // LOG_LINES is used instead of LOG since the message can exceed the
+  // maximum line length, which results in the message being truncated.
+  XLA_VLOG_LINES(
+      1, absl::StrFormat("GpuCompilationEnvironment of hlo_module %s:\n%s",
+                         hlo_module->name(), debug_options.DebugString()));
 
   MaybeOwningThreadPool thread_pool = MaybeOwningThreadPool::GetOrCreate(
       /*parallelism=*/hlo_module->config()
@@ -699,6 +723,10 @@ Status GpuCompiler::OptimizeHloModule(HloModule* hlo_module,
 
     pipeline.AddPass<OperandUpcaster>(upcaster_filter);
     pipeline.AddPass<ResultCaster>(upcaster_filter);
+
+    // Add the DotOperandConverter after any potential upcasts done as part of
+    // the OperandUpcaster, so that the DotOperandConverter becomes a no-op.
+    pipeline.AddPass<DotOperandConverter>();
 
     pipeline.AddPass<SubByteNormalization>(
         SubByteNormalization::SET_ELEMENT_SIZE);
@@ -972,6 +1000,7 @@ Status GpuCompiler::OptimizeHloModule(HloModule* hlo_module,
     // Layout's element_size_in_bits field.
     pipeline.AddPass<SubByteNormalization>(
         SubByteNormalization::SET_ELEMENT_SIZE);
+    pipeline.AddPass<OptimizeInputOutputBufferAlias>(true);
     TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
   }
 
@@ -1213,7 +1242,8 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     // heuristic, so we can mix and match various Gemm implementations based
     // on projected (measured) performance.
     if (debug_options.xla_gpu_enable_custom_fusions()) {
-      pipeline.AddPass<CustomFusionRewriter>();
+      pipeline.AddPass<CustomFusionRewriter>(
+          &gpu_target_config.device_description);
     }
 
     // Rewrite GEMMs into custom calls.
@@ -1299,11 +1329,21 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
   // duplicate or NOPs, so remove them with algebraic simplification and CSE.
   pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(simplifier_options);
 
+  if (debug_options.xla_gpu_simplify_all_fp_conversions()) {
+    // This pass cleans up chains of compiler-generated converts
+    // (i.e. f32 -> bf16 -> f32) that have been produced by the algebraic
+    // simplifier by rearranging ops (i.e. by pushing broadcasts towards the
+    // root).
+    pipeline.AddPass<SimplifyFPConversions>(
+        SimplifyFPConversions::Scope::
+            kOnlySimplifyCompilerGeneratedConversions);
+  }
+
   // Since this CSE runs after collective schedule linearizer which inserts
   // control dependencies, ignore these control deps when replacing instructions
   // with equivalent ones here.
   pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
-                           /*only_fusion_computations*/ false,
+                           /*only_fusion_computations=*/false,
                            /*ignore_control_dependencies=*/true);
   TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
 
@@ -1433,7 +1473,7 @@ Status RunPostSchedulingCopyInsertion(
 }  // namespace
 
 StatusOr<std::unique_ptr<BufferAssignment>> GpuCompiler::AssignBuffers(
-    HloModule* hlo_module, se::StreamExecutor* stream_exec) {
+    HloModule* hlo_module, const se::StreamExecutor* stream_exec) {
   const se::DeviceDescription& gpu_device_info =
       stream_exec->GetDeviceDescription();
   const int64_t scheduler_mem_limit =
@@ -1701,12 +1741,6 @@ GpuCompiler::CompileToBackendResult(
       GetSchedulerMemoryLimit(module, gpu_device_info, pointer_size_);
   TF_RETURN_IF_ERROR(ScheduleGpuModule(module, pointer_size_,
                                        scheduler_mem_limit, gpu_device_info));
-
-  if (!IsXlaRuntimeExecutableEnabled(module->config())) {
-    HloPassPipeline pipeline("command-buffer-scheduling");
-    pipeline.AddPass<CommandBufferScheduling>();
-    TF_RETURN_IF_ERROR(pipeline.Run(module).status());
-  }
 
   TF_RETURN_IF_ERROR(RunPostSchedulingPipelines(module, scheduler_mem_limit));
 
@@ -1976,15 +2010,19 @@ StatusOr<std::unique_ptr<AotCompilationResult>> GpuCompiler::Export(
     Executable* executable) const {
   auto* gpu_executable = tensorflow::down_cast<GpuExecutable*>(executable);
   if (!gpu_executable) return Internal("GpuExecutable is null");
-  HloModuleProto module_proto = gpu_executable->module().ToProto();
-  auto obj_file = gpu_executable->GetObjFile().value_or("");
-  auto mlir_module = gpu_executable->GetMlirModule().value_or("");
-  auto text = gpu_executable->text();
-  auto binary = gpu_executable->binary();
 
-  return std::make_unique<xla::gpu::GpuAotCompilationResult>(
-      module_proto, obj_file, mlir_module, text, binary,
-      gpu_executable->constants());
+  if (gpu_executable->IsXlaRuntimeEnabled()) {
+    HloModuleProto module_proto = gpu_executable->module().ToProto();
+    auto obj_file = gpu_executable->GetObjFile().value_or("");
+    auto mlir_module = gpu_executable->GetMlirModule().value_or("");
+    return std::make_unique<xla::gpu::GpuAotCompilationResult>(
+        module_proto, obj_file, mlir_module, gpu_executable->text(),
+        gpu_executable->binary(), gpu_executable->constants());
+  } else {
+    return std::make_unique<xla::gpu::GpuThunkAotCompilationResult>(
+        &gpu_executable->module(), gpu_executable->buffer_assignment(),
+        gpu_executable->text(), gpu_executable->binary());
+  }
 }
 
 Status GpuCompiler::RunPostSchedulingPipelines(
@@ -2035,6 +2073,17 @@ Status GpuCompiler::RunPostSchedulingPipelines(
     // insert additional copies.
     TF_RETURN_IF_ERROR(pipeline.Run(module).status());
   }
+
+  // After we have a scheduled module and all operations wrapped into fusions we
+  // can decide how to wrap them into command buffers.
+  if (!IsXlaRuntimeExecutableEnabled(module->config())) {
+    HloPassPipeline pipeline("command-buffer-scheduling");
+    auto driver_version = se::gpu::GpuDriver::GetDriverVersion();
+    pipeline.AddPass<CommandBufferScheduling>(
+        CUDA_VERSION, driver_version.value_or(CUDA_VERSION));
+    TF_RETURN_IF_ERROR(pipeline.Run(module).status());
+  }
+
   return OkStatus();
 }
 

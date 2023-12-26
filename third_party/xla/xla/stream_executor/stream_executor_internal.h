@@ -136,6 +136,10 @@ class CommandBufferInterface {
   virtual tsl::Status Trace(Stream* stream,
                             absl::AnyInvocable<tsl::Status()> function) = 0;
 
+  // Adds an execution barrier to a command buffer: all commands added before a
+  // barrier will complete before any of the commands added after a barrier.
+  virtual tsl::Status Barrier(StreamExecutor* executor) = 0;
+
   // Adds a kernel launch command to the command buffer.
   virtual tsl::Status Launch(const ThreadDim& threads, const BlockDim& blocks,
                              const Kernel& kernel, const KernelArgs& args) = 0;
@@ -155,6 +159,10 @@ class CommandBufferInterface {
 
   // Adds a device memory allocation node to the command buffer.
   virtual tsl::StatusOr<DeviceMemoryBase> Allocate(size_t bytes) = 0;
+
+  // Adds a device memory free command to the command buffer, buffer is
+  // allocated in other command buffer, free through real address.
+  virtual tsl::Status Free(DeviceMemoryBase dst) = 0;
 
   // For all conditional command APIs defined below, nested command buffers
   // constructed for conditional branches owned by *this and should never be
@@ -240,13 +248,9 @@ class StreamInterface {
   virtual ~StreamInterface() = default;
 
   // Sets priority for a stream.
-  virtual void SetPriority(StreamPriority priority) {
-    LOG(ERROR) << "SetPriority unimplemented for this stream.";
-  }
+  virtual void SetPriority(StreamPriority priority) {}
 
-  virtual void SetPriority(int priority) {
-    LOG(ERROR) << "SetPriority unimplemented for this stream.";
-  }
+  virtual void SetPriority(int priority) {}
 
   // Gets priority for a stream.
   virtual std::variant<StreamPriority, int> priority() const {
@@ -316,6 +320,13 @@ class StreamExecutorInterface {
     return absl::UnimplementedError("Not Implemented");
   }
 
+  virtual tsl::Status Launch(Stream* stream, const ThreadDim& thread_dims,
+                             const BlockDim& block_dims,
+                             const ClusterDim& cluster_dims, const Kernel& k,
+                             const KernelArgs& args) {
+    return absl::UnimplementedError("Not Implemented");
+  }
+
   virtual tsl::Status Submit(Stream* stream,
                              const CommandBuffer& command_buffer) {
     return absl::UnimplementedError("Not Implemented");
@@ -327,8 +338,6 @@ class StreamExecutorInterface {
   DeviceMemoryBase Allocate(uint64_t size) {
     return Allocate(size, /*memory_space=*/0);
   }
-  virtual void* GetSubBuffer(DeviceMemoryBase* parent, uint64_t offset,
-                             uint64_t size) = 0;
   virtual void Deallocate(DeviceMemoryBase* mem) = 0;
   // Allocates unified memory space of the given size, if supported.
   // See

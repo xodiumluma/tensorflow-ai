@@ -85,7 +85,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_cpu_fast_math_honor_division(true);
 
   // TODO(AyanmoI): Remove this flag when cuDNN FMHA is fully supported.
-  opts.set_xla_gpu_enable_cudnn_fmha(false);
+  opts.set_xla_gpu_enable_cudnn_fmha(true);
 
   opts.set_xla_gpu_fused_attention_use_cudnn_rng(false);
 
@@ -120,7 +120,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_all_gather_combine_by_dim(true);
   opts.set_xla_gpu_enable_reduce_scatter_combine_by_dim(true);
 
-  opts.set_xla_gpu_enable_async_collectives(false);
+  opts.set_xla_gpu_enable_async_collectives(true);
   opts.set_xla_gpu_enable_async_all_reduce(true);
   opts.set_xla_gpu_enable_async_all_gather(false);
   opts.set_xla_gpu_enable_async_collective_permute(false);
@@ -140,10 +140,6 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_nccl_termination_timeout_seconds(-1);
   opts.set_xla_gpu_enable_shared_constants(true);
 
-  // XLA:GPU + IREE runtime flags.
-  opts.set_xla_gpu_enable_gpu2_runtime(false);
-  opts.set_xla_gpu_enable_gpu2_hal(true);
-
   // Set 4GB space limit for redzone scratch allocator.
   opts.set_xla_gpu_redzone_scratch_max_megabytes(1LL << 12);
   opts.set_xla_gpu_redzone_padding_bytes(8 * 1024 * 1024);
@@ -159,9 +155,9 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_highest_priority_async_stream(true);
 
   opts.set_xla_gpu_enable_pipelined_collectives(false);
-  opts.set_xla_gpu_enable_pipelined_all_reduce(false);
-  opts.set_xla_gpu_enable_pipelined_all_gather(false);
-  opts.set_xla_gpu_enable_pipelined_reduce_scatter(false);
+  opts.set_xla_gpu_enable_pipelined_all_reduce(true);
+  opts.set_xla_gpu_enable_pipelined_all_gather(true);
+  opts.set_xla_gpu_enable_pipelined_reduce_scatter(true);
   opts.set_xla_gpu_enable_pipelined_p2p(false);
 
   opts.set_xla_gpu_collective_permute_decomposer_threshold(
@@ -1078,16 +1074,6 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "Limits custom fusion only to fusions which match this regular "
       "expression. Default is all custom fusions registerered in a current "
       "process."));
-  flag_list->push_back(
-      tsl::Flag("xla_gpu_enable_gpu2_runtime",
-                bool_setter_for(&DebugOptions::set_xla_gpu_enable_gpu2_runtime),
-                debug_options->xla_gpu_enable_gpu2_runtime(),
-                "Whether to enable experimental XLA:GPU runtime"));
-  flag_list->push_back(
-      tsl::Flag("xla_gpu_enable_gpu2_hal",
-                bool_setter_for(&DebugOptions::set_xla_gpu_enable_gpu2_hal),
-                debug_options->xla_gpu_enable_gpu2_hal(),
-                "Whether to enable CUDA HAL in experimental XLA:GPU runtime"));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_nccl_termination_timeout_seconds",
       int64_setter_for(
@@ -1270,7 +1256,9 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 bool_setter_for(&DebugOptions::set_xla_gpu_triton_gemm_any),
                 debug_options->xla_gpu_triton_gemm_any(),
                 "Use Triton-based matrix multiplication for any GEMM it "
-                "supports without filtering only faster ones."));
+                "supports without filtering only faster ones. To make sure "
+                "only triton gemm is chosen by the autotuner run with "
+                "`xla_gpu_cublas_fallback` set to false."));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_exhaustive_tiling_search",
       bool_setter_for(&DebugOptions::set_xla_gpu_exhaustive_tiling_search),

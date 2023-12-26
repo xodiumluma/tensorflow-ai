@@ -16,10 +16,49 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_KERNELS_CUTLASS_GEMM_H_
 #define XLA_SERVICE_GPU_KERNELS_CUTLASS_GEMM_H_
 
+//===-------------------------------------------------------------------------//
+//                 ! ! ! ! !      WARNING      ! ! ! ! !                      //
+//===-------------------------------------------------------------------------//
+//                                                                            //
+//   Do not add external dependencies to this header. Use only std library.   //
+//                                                                            //
+//===-------------------------------------------------------------------------//
+//                 ! ! ! ! !      WARNING      ! ! ! ! !                      //
+//===-------------------------------------------------------------------------//
+
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace xla::gpu::kernel::gemm_universal {
+
+//===----------------------------------------------------------------------===//
+// Tag based GEMM dispatching
+//===----------------------------------------------------------------------===//
+
+// We use tag-based template specializations to carefully avoid including
+// CUTLASS headers into regular libraries, and specialize templates in separate
+// CUDA build targets that have no dependencies on other parts of XLA or ABSL to
+// enable parallel compilation and minimize recompilations on code changes.
+//
+// Here we re-define some of the enums and types defined in CUTLASS and CUTE to
+// break a dependency on them from XLA.
+
+enum class Arch { kDefault, kSm80, kSm90 };
+
+template <Arch arch>
+struct Bf16xBf16ToBf16 {};
+
+template <Arch arch>
+struct F32xF32ToF32 {};
+
+// A tag to specialize CUTLASS kernel adaptors for loading kernels from shared
+// libraries using dlopen.
+struct DlOpenedKernel {};
+
+//===----------------------------------------------------------------------===//
+// CUTLASS gemm arguments
+//===----------------------------------------------------------------------===//
 
 // Indices of a custom fusion parameters corresponding to Gemm kernel arguments.
 //
@@ -33,10 +72,21 @@ struct ArgsIndices {
   int64_t lhs;
   int64_t rhs;
   int64_t out;
+
+  // Workspace parameter is a special case, as it's always passed as a last
+  // parameter at run time (only if requested).
+  bool has_workspace;
 };
 
-// Following structs encode how a custom kernel arguments packing and a custom
-// CUTLASS kernel itself can find dynamic-slice offsets at run time.
+// Custom CUTLASS gemm kernels support on-device address arithmetics for input
+// and output buffers, so that we can fuse dynamic-slice/dynamic-update-slice
+// operations into the GEMM kernel.
+//
+// Base pointers and memory layout known on the host before kernel launch, but
+// offsets are computed on device and available only in device memory. We can't
+// load offsets to the host as it would require stream synchronization.
+//
+// Following structs encode how dynamic offsets passed to custom kernels.
 //
 // Example: CUTLASS gemm with a dynamic-update-slice
 //
@@ -59,23 +109,14 @@ struct ArgsIndices {
 // For this example:
 //
 //   DynamicSliceIndices::out = 2
-//   DynamicSliceParams::out = <pointer to p2 buffer>
+//   DynamicSliceArguments::out = <pointer to p2 buffer>
 //
 // `DynamicSliceIndices` used in the host-code to fetch device memory pointers
-// from arguments and pass it as `DynamicSliceParams` to a device kernel.
+// from arguments and pass it as `DynamicSliceArguments` to a device kernel.
 //
-// Example:
-//   se::KernelArgsDeviceMemoryArray args = ...
-//   void* out_ptr = args->device_memory_ptr(*slice_indices.out);
-//
-//   DynamicSliceParams params { // this struct passed to a kernel
-//     out_ptr,                  // kernel loads offset value from this pointer
-//     ...
-//   };
-//
-
-// TODO(ezhulenev): Support dynamic slices along all dimensions, today we assume
-// that we can slice only along the leading dimension (batch).
+// Kernel arguments packing function can pass dynamic slices as a part of
+// CUTLASS kernel parameters, or as a separate argument to a device kernel entry
+// function (CUTLASS 3x vs 2x).
 
 // Indices of a custom fusion parameters corresponding to dynamic slice offsets.
 struct DynamicSliceIndices {
@@ -84,9 +125,121 @@ struct DynamicSliceIndices {
 };
 
 // Pointers to buffers (s32[] buffers in HLO) holding dynamic slice offsets.
-struct DynamicSliceParams {
-  // Dynamic slice offset along the major dimension.
-  std::optional<int32_t*> out;
+struct DynamicSliceArguments {
+  int32_t* out = nullptr;
+};
+
+// Type-erased CUTLASS gemm arguments structure that has all of the details
+// required for packing CUTLASS kernel parameters.
+struct Arguments {
+  int32_t m;
+  int32_t n;
+  int32_t k;
+
+  void* lhs;
+  void* rhs;
+  void* out;
+  void* workspace;
+
+  DynamicSliceArguments slices;
+};
+
+//===----------------------------------------------------------------------===//
+// CUTLASS Host Side Adaptor
+//===----------------------------------------------------------------------===//
+
+template <typename Tag>
+struct Traits;
+
+struct Dim3 {
+  uint32_t x = 1;
+  uint32_t y = 1;
+  uint32_t z = 1;
+};
+
+// This is a type-erased adaptor that has all details required for launching
+// CUTLASS kernel on a device. At run time device kernel parameters is really
+// just a bag of bytes that driver sends to a kernel, so we rely on it to hide
+// CUTLASS templates inside individual build targets and don't leak them into
+// XLA, as they contain device code and can't be parsed by regular clang.
+template <typename Tag>
+class Adaptor {
+ public:
+  std::optional<Dim3> ClusterDim() const;
+  Dim3 BlockDim(int32_t m, int32_t n, int32_t k) const;
+  Dim3 ThreadDim() const;
+
+  int32_t SharedMemoryBytes() const;
+
+  bool CanImplement(const Arguments& args) const;
+  int64_t WorkspaceSize(const Arguments& args) const;
+
+  void Initialize(void* params, const Arguments& args, int32_t device_sms,
+                  int32_t sm_occupancy) const;
+};
+
+// This is a specialization of adaptor that can load CUTLASS kernels from
+// pre-compiled shared libraries on disk. Libraries can be compiled ahead of
+// time using external toolchain, e.g. NVCC, as long as they export required
+// symbols with a plain C calling convention.
+template <>
+class Adaptor<DlOpenedKernel> {
+ public:
+  static std::optional<Adaptor> Load(const std::string& path);
+
+  std::optional<Dim3> ClusterDim() const;
+  Dim3 BlockDim(int32_t m, int32_t n, int32_t k) const;
+  Dim3 ThreadDim() const;
+
+  int32_t SharedMemoryBytes() const;
+
+  bool CanImplement(const Arguments& args) const;
+  int64_t WorkspaceSize(const Arguments& args) const;
+
+  void Initialize(void* params, const Arguments& args, int32_t device_sms,
+                  int32_t sm_occupancy) const;
+
+ private:
+  Adaptor(void* handle, void* block_dim_fn, void* thread_dim_fn,
+          void* shared_memory_bytes_fn, void* can_implement_fn,
+          void* workspace_size_fn, void* initialize_fn);
+
+  void* handle_;
+  void* block_dim_fn_;
+  void* thread_dim_fn_;
+  void* shared_memory_bytes_fn_;
+  void* can_implement_fn_;
+  void* workspace_size_fn_;
+  void* initialize_fn_;
+};
+
+//===----------------------------------------------------------------------===//
+// CUTLASS Device Side Adaptor
+//===----------------------------------------------------------------------===//
+
+// We keep device side adaptor separate from host side adaptor so that we could
+// easily split host and device code compilation if needed.
+
+template <typename Tag>
+class DeviceKernel {
+ public:
+  void* symbol() const;
+};
+
+// This is a specialization of device kernel for loading CUTLASS kernels from
+// shared libraries on disk (see Adaptor specialization above).
+template <>
+class DeviceKernel<DlOpenedKernel> {
+ public:
+  static std::optional<DeviceKernel> Load(const std::string& path);
+
+  void* symbol() const;
+
+ private:
+  DeviceKernel(void* handle, void* symbol_fn);
+
+  void* handle_;
+  void* symbol_fn_;
 };
 
 }  // namespace xla::gpu::kernel::gemm_universal

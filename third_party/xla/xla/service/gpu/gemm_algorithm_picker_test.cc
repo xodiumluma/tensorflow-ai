@@ -44,9 +44,33 @@ class GemmAlgorithmPickerTest : public HloTestBase,
     debug_options.set_xla_gpu_enable_triton_gemm(false);
     return debug_options;
   }
+
+  void SetUp() override {
+    const auto& gpu_cc = backend()
+                             .default_stream_executor()
+                             ->GetDeviceDescription()
+                             .gpu_compute_capability();
+
+    if (auto* procm = std::get_if<se::RocmComputeCapability>(&gpu_cc)) {
+      if (GetDebugOptionsForTest().xla_gpu_enable_cublaslt() &&
+          !procm->has_hipblaslt()) {
+        GTEST_SKIP() << "No gpublas-lt support on this architecture!";
+      }
+    }
+  }
 };
 
 TEST_P(GemmAlgorithmPickerTest, SetAlgorithm) {
+  auto comp = backend()
+                  .default_stream_executor()
+                  ->GetDeviceDescription()
+                  .cuda_compute_capability();
+  if (comp.IsAtLeast(se::CudaComputeCapability::AMPERE)) {
+    GTEST_SKIP() << "Skipping this test for Ampere+ as it is supported and "
+                    "recommended with "
+                    "the Nvidia Volta+ GPUs.";
+  }
+
   constexpr absl::string_view kHlo = R"(
 HloModule module
 
@@ -117,6 +141,16 @@ ENTRY main {
 }
 
 TEST_P(GemmAlgorithmPickerTest, GetAlgorithmWithoutDevice) {
+  auto comp = backend()
+                  .default_stream_executor()
+                  ->GetDeviceDescription()
+                  .cuda_compute_capability();
+  if (comp.IsAtLeast(se::CudaComputeCapability::AMPERE)) {
+    GTEST_SKIP() << "Skipping this test for Ampere+ as it is supported and "
+                    "recommended with "
+                    "the Nvidia Volta+ GPUs.";
+  }
+
   constexpr absl::string_view kHlo = R"(
 HloModule module
 

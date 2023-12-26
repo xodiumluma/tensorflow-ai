@@ -64,6 +64,7 @@ limitations under the License.
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/statusor.h"
 #include "tsl/profiler/lib/scoped_annotation.h"
 #include "tsl/profiler/lib/traceme.h"
 
@@ -215,7 +216,7 @@ Status ExecuteThunks(const std::string& module_name, ModuleIdentifier module_id,
     stream_priority = stream_executor::StreamPriority::Highest;
   }
 
-  // Create the needed streams to support NcclCollectiveThunk.
+  // Borrow streams required for NcclCollectiveThunk.
   absl::InlinedVector<se::Stream*, kAsyncStreamTotal> async_comms_streams(
       kAsyncStreamTotal, nullptr);
   StatusOr<std::vector<StreamPool::Ptr>> streams = run_options->BorrowStreams(
@@ -225,11 +226,24 @@ Status ExecuteThunks(const std::string& module_name, ModuleIdentifier module_id,
       async_comms_streams[i] = streams->at(i).get();
     }
   }
+
+  // Borrow stream for tracing command buffers.
+  se::Stream* command_buffer_trace_stream = nullptr;
+  StatusOr<StreamPool::Ptr> borrowed_command_buffer_trace_stream =
+      run_options->BorrowStream(executor->device_ordinal());
+  if (borrowed_command_buffer_trace_stream.ok()) {
+    command_buffer_trace_stream = borrowed_command_buffer_trace_stream->get();
+  }
+
   uint64_t start_nanos = tsl::Env::Default()->NowNanos();
 
   tsl::profiler::TraceMe hlo_module_activity(
       [&] { return absl::StrCat(module_name, ":XLA GPU module"); },
       tsl::profiler::TraceMeLevel::kInfo);
+
+  Thunk::ExecuteParams thunk_params{*run_options, buffer_allocations,
+                                    main_stream, command_buffer_trace_stream,
+                                    async_comms_streams};
 
   for (const std::unique_ptr<Thunk>& thunk : thunk_sequence) {
     // Annotate execution of this op if tracing was enabled when we started
@@ -244,8 +258,6 @@ Status ExecuteThunks(const std::string& module_name, ModuleIdentifier module_id,
       }
     }
 
-    Thunk::ExecuteParams thunk_params{*run_options, buffer_allocations,
-                                      main_stream, async_comms_streams};
     TF_RETURN_IF_ERROR(thunk->ExecuteOnStream(thunk_params));
   }
   return MaybeSyncAndProfile(run_options, start_nanos,
@@ -1068,8 +1080,7 @@ StatusOr<std::unique_ptr<Executable>> GpuExecutable::LoadFromObjFile(
     std::shared_ptr<HloModule> hlo_module, absl::string_view obj_file,
     absl::string_view mlir_module, DebugOptions debug_options,
     absl::string_view asm_text, absl::string_view binary,
-    std::vector<ConstantInfo> constants, se::GpuComputeCapability gpu_version,
-    se::StreamExecutor* executor) {
+    std::vector<ConstantInfo> constants, se::GpuComputeCapability gpu_version) {
   VLOG(1) << "Load serialized Gpu executable from object file: module="
           << hlo_module->name();
 

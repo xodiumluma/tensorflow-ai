@@ -92,6 +92,8 @@ cc_library(
         "//xla/stream_executor:device_memory_allocator",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/synchronization",
+        "@local_tsl//tsl/profiler/lib:connected_traceme",
+        "@local_tsl//tsl/profiler/lib:context_types_hdrs",
     ],
 )
 
@@ -118,6 +120,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":event_pool",
+        ":pjrt_common",
         ":semaphore",
         ":worker_thread",
         "//xla:status",
@@ -292,7 +295,6 @@ cc_library(
         ":pjrt_device_description",
         ":pjrt_executable",
         "//xla/client:xla_computation",
-        "//xla/service:hlo_parser",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -327,6 +329,9 @@ cc_library(
     name = "pjrt_common",
     hdrs = ["pjrt_common.h"],
     visibility = ["//visibility:public"],
+    deps = [
+        "@local_tsl//tsl/lib/gtl:int_type",
+    ],
 )
 
 cc_library(
@@ -425,6 +430,7 @@ cc_library(
         ":metrics",
         ":mlir_to_hlo",
         ":pjrt_client",
+        ":pjrt_common",
         ":pjrt_executable",
         ":pjrt_future",
         ":tracked_device_buffer",
@@ -661,6 +667,7 @@ cc_library(
         "//xla/mlir_hlo:mhlo_passes",
         "//xla/pjrt/c:pjrt_c_api_hdrs",
         "//xla/pjrt/c:pjrt_c_api_helpers",
+        "//xla/pjrt/distributed:key_value_store_interface",
         "//xla/service:computation_placer_hdr",
         "//xla/service:hlo_cost_analysis",
         "//xla/service:hlo_module_config",
@@ -808,4 +815,37 @@ tf_proto_library(
         "//xla/service:hlo_proto",
     ],
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "exceptions",
+    hdrs = ["exceptions.h"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//xla:status",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "status_casters",
+    hdrs = ["status_casters.h"],
+    copts = [
+        "-fexceptions",
+        "-fno-strict-aliasing",
+    ],
+    features = ["-use_header_modules"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":exceptions",
+        "//xla:status",
+        "//xla:statusor",
+        "@local_tsl//tsl/platform:macros",
+    ],
 )

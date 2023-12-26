@@ -472,16 +472,6 @@ CreateDeviceAttributeToLaunchPass();
 std::unique_ptr<OperationPass<func::FuncOp>> CreateLaunchToDeviceAttributePass(
     bool legacy_graph_export = true);
 
-// Creates a pass that extracts ops in tf_device.launch op with host device
-// assignment and adds an `_xla_outside_compilation` attribute value.
-std::unique_ptr<OperationPass<ModuleOp>>
-CreateHostLaunchToOutsideCompiledPass();
-
-// Creates a pass that wraps ops with the same `_xla_outside_compilation`
-// attribute value in a tf_device.launch op with host device assignment.
-std::unique_ptr<OperationPass<ModuleOp>>
-CreateOutsideCompiledToHostLaunchPass();
-
 // Creates a pass to ensure that the `_xla_outside_compilation` and
 // tf_device.launch op no longer exist after Outside Compilation is complete.
 std::unique_ptr<OperationPass<func::FuncOp>>
@@ -546,11 +536,6 @@ CreateTPUResourceReadsWritesPartitioningPass();
 // ensures that the generated tpu program has the correct inputs annotation.
 std::unique_ptr<OperationPass<ModuleOp>>
 CreateTPUAnnotateDynamicShapeInputsPass();
-
-// Creates a pass that rewrites `tf_device.launch_func` on TPUs into TPU runtime
-// ops.
-std::unique_ptr<OperationPass<ModuleOp>> CreateTPURewritePass(
-    llvm::StringRef module_name = llvm::StringRef());
 
 // Creates a pass that identifies XLASharding ops in launch op for TPU
 // computation.
@@ -701,7 +686,6 @@ enum MoveTransposeDirection { kBegin, kEnd };
 #define GEN_PASS_DECL_TPUREORDERREPLICATEANDPARTITIONEDINPUTSPASS
 #define GEN_PASS_DECL_TPURESOURCEREADFORWRITEPASS
 #define GEN_PASS_DECL_TPURESOURCEREADSWRITESPARTITIONINGPASS
-#define GEN_PASS_DECL_TPUREWRITEPASS
 #define GEN_PASS_DECL_TPUSHARDINGIDENTIFICATIONPASS
 #define GEN_PASS_DECL_TPUSPACETODEPTHPASS
 #define GEN_PASS_DECL_TPUUPDATEEMBEDDINGENQUEUEOPINPUTSPASS
