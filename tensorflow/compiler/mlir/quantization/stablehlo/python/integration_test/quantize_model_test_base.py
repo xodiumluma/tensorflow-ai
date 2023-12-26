@@ -26,6 +26,7 @@ from tensorflow.python.framework import tensor_spec
 from tensorflow.python.module import module
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import nn_ops
 from tensorflow.python.platform import test
 from tensorflow.python.saved_model import save as saved_model_save
 from tensorflow.python.types import core
@@ -119,11 +120,6 @@ class QuantizedModelTest(test.TestCase, parameterized.TestCase):
     # And if bias_size is None, has_bias should be False.
     assert (bias_size is None) != has_bias
 
-    # Verify that bias size is correct
-    if bias_size:
-      input_height = input_shape[0] if len(input_shape) == 2 else input_shape[1]
-      assert input_height * weight_shape[-1] % bias_size == 0
-
     model = MatmulModel(weight_shape, bias_size, activation_fn)
     saved_model_save.save(
         model,
@@ -181,6 +177,8 @@ class QuantizedModelTest(test.TestCase, parameterized.TestCase):
         if self.same_scale_op == 'concatenate':
           ones = array_ops.ones_like(out)
           out = array_ops.concat([out, ones], 0)
+        elif self.same_scale_op == 'gather':
+          out = array_ops.gather(out, indices=[0], axis=0)
         elif self.same_scale_op == 'pad':
           paddings = array_ops.ones(
               (array_ops.rank(out), 2), dtype=dtypes.int32
@@ -195,6 +193,14 @@ class QuantizedModelTest(test.TestCase, parameterized.TestCase):
           )
           ones = array_ops.ones_like(out)
           out = math_ops.select(condition, out, ones)
+        elif self.same_scale_op == 'slice':
+          begin = array_ops.zeros(
+              (array_ops.rank(out)), dtype=dtypes.int32
+          )
+          size = array_ops.ones(
+              (array_ops.rank(out)), dtype=dtypes.int32
+          )
+          out = array_ops.slice(out, begin, size)
         elif self.same_scale_op == 'transpose':
           out = array_ops.transpose(out)
         else:
@@ -211,6 +217,80 @@ class QuantizedModelTest(test.TestCase, parameterized.TestCase):
         model,
         saved_model_path,
         signatures=model.matmul_and_same_scale.get_concrete_function(
+            tensor_spec.TensorSpec(
+                shape=input_shape, dtype=dtypes.float32, name='input_tensor'
+            )
+        ),
+    )
+    return model
+
+  def _create_conv2d_model(
+      self,
+      input_shape: Sequence[int],
+      filter_shape: Sequence[int],
+      saved_model_path: str,
+      has_bias: bool = False,
+      has_batch_norm: bool = False,
+      activation_fn: Optional[ops.Operation] = None,
+      strides: Sequence[int] = (1, 1, 1, 1),
+      dilations: Sequence[int] = (1, 1, 1, 1),
+      padding: str = 'SAME',
+  ) -> module.Module:
+    class ConvModel(module.Module):
+      """A simple model with a single conv2d, bias and relu."""
+
+      def __init__(self):
+        self.out_channel_size = filter_shape[-1]
+
+        # This ensures filters will have different value range per out channel
+        self.filters = np.stack(
+            [
+                np.random.uniform(
+                    low=-(i + 1), high=(i + 1), size=filter_shape[:-1]
+                ).astype('f4')
+                for i in range(self.out_channel_size)
+            ],
+            axis=-1,
+        )
+
+        self.bias = np.random.uniform(
+            low=0, high=10, size=(self.out_channel_size)
+        ).astype('f4')
+
+      @def_function.function
+      def conv2d(self, input_tensor: core.Tensor) -> Mapping[str, core.Tensor]:
+        """Performs a 2D convolution operation.
+
+        Args:
+          input_tensor: Input tensor to perform convolution on.
+
+        Returns:
+          A map of: output key -> output result.
+        """
+        scale = [1.0] * self.out_channel_size
+        offset = [0.5] * self.out_channel_size
+        mean, variance = scale, offset
+        out = nn_ops.conv2d(
+            input_tensor,
+            self.filters,
+            strides=strides,
+            dilations=dilations,
+            padding=padding,
+            data_format='NHWC',
+            name='sample/conv',
+        )
+        if has_batch_norm:
+          # Fusing is supported for non-training case.
+          out, _, _, _, _, _ = nn_ops.fused_batch_norm_v3(
+              out, scale, offset, mean, variance, is_training=False
+          )
+        return {'output': out}
+
+    model = ConvModel()
+    saved_model_save.save(
+        model,
+        saved_model_path,
+        signatures=model.conv2d.get_concrete_function(
             tensor_spec.TensorSpec(
                 shape=input_shape, dtype=dtypes.float32, name='input_tensor'
             )

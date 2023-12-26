@@ -40,6 +40,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
+#include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -274,6 +275,12 @@ class PjRtCApiClient : public PjRtClient {
   StatusOr<std::unique_ptr<HloCostAnalysis>> GetHloCostAnalysis()
       const override {
     return Unimplemented("PJRT C API does not support GetHloCostAnalysis");
+  }
+
+  StatusOr<Layout> GetDefaultLayout(PrimitiveType element_type,
+                                    absl::Span<const int64_t> dims) override {
+    // TODO(skyewm): implement
+    return Unimplemented("PJRT C API does not support GetDefaultLayout");
   }
 
   StatusOr<std::unique_ptr<PjRtLoadedExecutable>> Compile(
@@ -573,6 +580,10 @@ class PjRtCApiExecutable : public PjRtExecutable {
   StatusOr<std::vector<std::shared_ptr<HloModule>>> GetHloModules()
       const override;
 
+  StatusOr<CompiledMemoryStats> GetCompiledMemoryStats() const override {
+    return pjrt::GetCompiledMemoryStats(c_api_, executable_.get());
+  }
+
   StatusOr<std::vector<Shape>> GetOutputShapes() const override {
     LOG(FATAL) << "PjRtExecutable::GetOutputShapes() not implemented in PJRT C "
                   "API. Please use PjRtExecutable::GetOutputElementTypes() or "
@@ -636,6 +647,10 @@ class PjRtCApiLoadedExecutable : public PjRtLoadedExecutable {
   StatusOr<std::vector<std::shared_ptr<HloModule>>> GetHloModules()
       const override {
     return executable_->GetHloModules();
+  }
+
+  StatusOr<CompiledMemoryStats> GetCompiledMemoryStats() const override {
+    return executable_->GetCompiledMemoryStats();
   }
 
   StatusOr<std::vector<Shape>> GetOutputShapes() const override {
@@ -761,8 +776,7 @@ class CApiCopyToDeviceStream : public CopyToDeviceStream {
 StatusOr<std::unique_ptr<PjRtClient>> GetCApiClient(
     absl::string_view device_type,
     const absl::flat_hash_map<std::string, PjRtValueType>& create_options = {},
-    PjRtClient::KeyValueGetCallback kv_get = nullptr,
-    PjRtClient::KeyValuePutCallback kv_put = nullptr);
+    std::shared_ptr<KeyValueStoreInterface> kv_store = nullptr);
 
 StatusOr<std::unique_ptr<PjRtTopologyDescription>> GetCApiTopology(
     absl::string_view device_type, absl::string_view topology_name,

@@ -25,6 +25,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "xla/executable_run_options.h"
 #include "xla/hlo/ir/hlo_clone_context.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -34,7 +35,8 @@ limitations under the License.
 #include "xla/service/gpu/autotuner_util.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/hlo_module_config.h"
+#include "xla/service/maybe_owning_device_memory.h"
+#include "xla/service/service_executable_run_options.h"
 #include "xla/shape.h"
 #include "xla/statusor.h"
 #include "xla/stream_executor/device_memory.h"
@@ -90,7 +92,6 @@ AutotunerCompileUtil::AutotunerCompileUtil(const AutotuneConfig& config,
   // Avoid using GPU graphs as we don't want to measure graph construction time.
   opts_.clear_xla_gpu_enable_command_buffer();
   // Disable experimental XLA:GPU runtime.
-  opts_.set_xla_gpu_enable_gpu2_runtime(false);
   opts_.set_xla_embed_ir_in_executable(false);
   opts_.set_xla_gpu_enable_persistent_temp_buffers(false);
 }
@@ -136,7 +137,7 @@ StatusOr<std::unique_ptr<Executable>> AutotunerCompileUtil::Compile(
     GenerateModuleFn extractor) {
   StatusOr<std::unique_ptr<HloModule>> new_hlo_module = extractor(opts_);
   if (new_hlo_module.status().GetPayload(kUncompilableFusion).has_value()) {
-    // Incompatible value of split-k is an expected failure.
+    // Incompatible value of split-k is an example of an expected failure.
     return std::unique_ptr<Executable>();
   } else if (!new_hlo_module.status().ok()) {
     return new_hlo_module.status();

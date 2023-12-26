@@ -5,14 +5,11 @@ load(
     "tf_py_strict_test",
     "tf_python_pybind_extension",
 )
-load(
-    "//tensorflow/core/platform:build_config_root.bzl",
-    "if_static",
-)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
+        "//tensorflow/compiler/mlir/quantization/stablehlo:__subpackages__",
         "//tensorflow/compiler/mlir/quantization/tensorflow:internal_visibility_allowlist_package",
         "//tensorflow/python:__subpackages__",
     ],
@@ -33,7 +30,15 @@ cc_library(
         "//tensorflow/python:__pkg__",
     ],
     deps = [
+        ":unfreeze_constants",
         "//tensorflow/cc/saved_model:loader",
+        "//tensorflow/compiler/mlir/quantization/stablehlo:quantization_config_proto_cc",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:context",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:export",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:io",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:pass_pipeline",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:post_calibration",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:precalibration",
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:passes",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
@@ -42,15 +47,12 @@ cc_library(
         "//tensorflow/compiler/mlir/quantization/tensorflow/calibrator:custom_aggregator_op",  # Required for CustomAggregator op registration.
         "//tensorflow/compiler/mlir/quantization/tensorflow/cc:convert_asset_args",
         "//tensorflow/compiler/mlir/quantization/tensorflow/cc:run_passes",
-        "//tensorflow/compiler/mlir/quantization/tensorflow/cc:save_variables",
-        "//tensorflow/compiler/mlir/quantization/tensorflow/cc:status_macro",
         "//tensorflow/compiler/mlir/quantization/tensorflow/debugging:dump_tensor_op",
         "//tensorflow/compiler/mlir/tensorflow",
         "//tensorflow/compiler/mlir/tensorflow:export_graphdef",
         "//tensorflow/compiler/mlir/tensorflow:mlir_import_options",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
         "//tensorflow/compiler/mlir/tensorflow:translate_lib",
-        "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tf_dialect_passes",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
@@ -66,16 +68,12 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
-        "@llvm-project//mlir:SCFDialect",
-        "@llvm-project//mlir:ShapeDialect",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:path",
-        "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
     ],
 )
@@ -88,7 +86,7 @@ cc_library(
     name = "quantize_model_cc",
     hdrs = ["quantize_model.h"],
     compatible_with = get_compatible_with_portable(),
-    deps = if_static([":quantize_model_cc_impl"]) + [
+    deps = [
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
         "//tensorflow/core:protos_all_cc",
@@ -101,7 +99,6 @@ cc_library(
 pytype_strict_library(
     name = "py_function_lib_py",
     srcs = ["py_function_lib.py"],
-    visibility = ["//visibility:private"],
     deps = [
         ":pywrap_function_lib",
         ":representative_dataset",
@@ -149,7 +146,6 @@ cc_library(
         "-use_header_modules",
         "-parse_headers",
     ],
-    visibility = ["//visibility:private"],
     deps = [
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
@@ -166,14 +162,38 @@ cc_library(
 cc_library(
     name = "py_function_lib",
     hdrs = ["py_function_lib.h"],
-    visibility = ["//visibility:private"],
+    compatible_with = get_compatible_with_portable(),
     deps = [
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc/calibration:min_max_value",
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
+        "//tensorflow/compiler/mlir/quantization/tensorflow/calibrator:calibration_statistics_proto_cc",
+        "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/protobuf:for_core_protos_cc",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings:string_view",
         "@pybind11",
+    ],
+)
+
+cc_library(
+    name = "unfreeze_constants",
+    srcs = ["unfreeze_constants.cc"],
+    hdrs = ["unfreeze_constants.h"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        "//tensorflow/compiler/mlir/quantization/tensorflow:passes",
+        "//tensorflow/compiler/mlir/quantization/tensorflow/cc:run_passes",
+        "//tensorflow/compiler/mlir/quantization/tensorflow/cc:save_variables",
+        "//tensorflow/core:lib",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:string_view",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:status",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -185,8 +205,10 @@ tf_python_pybind_extension(
     deps = [
         ":py_function_lib",
         ":type_casters",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc/calibration:min_max_value",
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
+        "//tensorflow/compiler/mlir/quantization/tensorflow/calibrator:calibration_statistics_proto_cc",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/protobuf:for_core_protos_cc",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -199,22 +221,25 @@ tf_python_pybind_extension(
 tf_python_pybind_extension(
     name = "pywrap_quantize_model",
     srcs = ["pywrap_quantize_model.cc"],
-    hdrs = ["quantize_model.h"],
     pytype_srcs = ["pywrap_quantize_model.pyi"],
     # All deps must be header-only.
     deps = [
         ":py_function_lib",
+        ":quantize_model_cc",
         ":type_casters",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:debugger",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:io",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc/calibration:assign_ids",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/cc/calibration:statistics",
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
+        "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/protobuf:for_core_protos_cc",
-        "//tensorflow/python/lib/core:pybind11_lib",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@local_tsl//tsl/platform:env",
         "@pybind11",
         "@pybind11_abseil//pybind11_abseil:absl_casters",
         "@pybind11_abseil//pybind11_abseil:import_status_module",

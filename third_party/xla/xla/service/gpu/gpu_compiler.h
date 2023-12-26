@@ -73,7 +73,7 @@ class GpuCompiler : public LLVMCompiler {
       const CompileOptions& options) override;
 
   StatusOr<std::unique_ptr<BufferAssignment>> AssignBuffers(
-      HloModule* hlo_module, se::StreamExecutor* stream_exec) override;
+      HloModule* hlo_module, const se::StreamExecutor* stream_exec) override;
 
   StatusOr<std::unique_ptr<Executable>> RunBackend(
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
@@ -101,6 +101,9 @@ class GpuCompiler : public LLVMCompiler {
 
   Status RunPostSchedulingPipelines(HloModule* module,
                                     int64_t scheduler_mem_limit) const;
+
+  std::string target_triple() const { return target_triple_; }
+  std::string data_layout() const { return data_layout_; }
 
  protected:
   struct BackendCompileResult {

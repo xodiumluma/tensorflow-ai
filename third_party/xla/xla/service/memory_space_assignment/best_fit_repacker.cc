@@ -189,14 +189,17 @@ class BestFitRepacker
     for (AllocationBlock* allocation_block : allocation_blocks_) {
       // Check if any of the colocations are already added to buffer_intervals_.
       bool need_allocation = true;
-      auto aliased_it = absl::c_find_if(
-          allocation_block->colocations, [&](AllocationBlock* search) {
-            return full_buffer_interval_map_.contains(search);
-          });
-      if (aliased_it != allocation_block->colocations.end()) {
-        full_buffer_interval_map_[*aliased_it].colocations.push_back(
-            allocation_block);
-        need_allocation = false;
+      CHECK_NE(allocation_block->next_colocated, nullptr);
+      for (AllocationBlock* colocated = allocation_block->next_colocated;
+           colocated != allocation_block;
+           colocated = colocated->next_colocated) {
+        auto aliased_it = full_buffer_interval_map_.find(colocated);
+        if (aliased_it != full_buffer_interval_map_.end() &&
+            aliased_it->second.need_allocation) {
+          aliased_it->second.colocations.push_back(allocation_block);
+          need_allocation = false;
+          break;
+        }
       }
       full_buffer_interval_map_.insert(
           std::make_pair(allocation_block,
@@ -246,7 +249,7 @@ class BestFitRepacker
     CHECK_EQ(allocation_blocks_.size(), full_buffer_interval_map_.size());
     CHECK_EQ(allocation_blocks_.size(), sliced_buffer_interval_map_.size());
 
-    VLOG(1) << [&]() -> std::string {
+    VLOG(2) << [&]() -> std::string {
       int sliced_blocks = 0;
       int colocation_sets = 0;
       int colocation_sets_with_multiple_sliced_blocks = 0;
@@ -323,7 +326,7 @@ class BestFitRepacker
   // - chunks is sorted in slice time order
   void CommitChunks(const AllocationBlock* allocation_block,
                     const std::vector<Chunk>& chunks) {
-    VLOG(2) << "Committing repack chunks for " << allocation_block->ToString();
+    VLOG(3) << "Committing repack chunks for " << allocation_block->ToString();
 
     int64_t new_offset = -1;
     std::optional<SlicedAllocationData> repacked_slice_data = std::nullopt;
@@ -345,7 +348,7 @@ class BestFitRepacker
         const Chunk& chunk = chunks[i];
         int64_t start_time = sorted_inclusive_start_times[i];
         result_.heap_size = result_.UpdatedHeapSize(chunk);
-        VLOG(2) << "Adding sliced chunk " << chunk.ToString() << " at ["
+        VLOG(3) << "Adding sliced chunk " << chunk.ToString() << " at ["
                 << start_time << ", " << allocation_block->end_time << "]";
         interval_tree_.Add(start_time, allocation_block->end_time, chunk);
         new_offset = (new_offset == -1 ? chunk.offset
@@ -361,7 +364,7 @@ class BestFitRepacker
       CHECK_EQ(chunks.size(), 1);
       new_offset = chunks.front().offset;
       result_.heap_size = result_.UpdatedHeapSize(chunks.front());
-      VLOG(2) << "Adding unsliced chunk " << chunks.front().ToString()
+      VLOG(3) << "Adding unsliced chunk " << chunks.front().ToString()
               << " at [" << allocation_block->inclusive_start_time << ", "
               << allocation_block->end_time << ")";
       interval_tree_.Add(allocation_block->inclusive_start_time,
@@ -555,8 +558,7 @@ class BestFitRepacker
     Finish();
     bool success = result_.heap_size <= max_size_;
     if (!success) {
-      LOG(INFO) << "Repacking unsuccessful with heap size "
-                << result_.heap_size;
+      VLOG(1) << "Repacking unsuccessful with heap size " << result_.heap_size;
       return false;
     }
 
@@ -576,13 +578,13 @@ class BestFitRepacker
       DebuggingValidate();
     }
 
-    if (VLOG_IS_ON(1)) {
+    if (VLOG_IS_ON(2)) {
       for (AllocationBlock* block : allocation_blocks_) {
-        VLOG(1) << "AllocationBlock after repacking: " << block->ToString();
+        VLOG(2) << "AllocationBlock after repacking: " << block->ToString();
       }
     }
 
-    LOG(INFO) << "Repacking successful with heap size " << result_.heap_size;
+    VLOG(1) << "Repacking successful with heap size " << result_.heap_size;
 
     return true;
   }

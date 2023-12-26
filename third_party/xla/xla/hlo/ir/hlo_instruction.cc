@@ -153,6 +153,19 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
                    });
     return result;
   };
+  const auto output_to_operand_aliasing = [&proto]() {
+    std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
+        output_to_operand_aliasing;
+    for (const auto& aliasing : proto.output_operand_aliasing()) {
+      output_to_operand_aliasing.emplace_back(
+          ShapeIndex(aliasing.output_shape_index().begin(),
+                     aliasing.output_shape_index().end()),
+          std::make_pair(aliasing.operand_index(),
+                         ShapeIndex(aliasing.operand_shape_index().begin(),
+                                    aliasing.operand_shape_index().end())));
+    }
+    return output_to_operand_aliasing;
+  };
   const auto computations = [&computation_map, &proto](int index) {
     return computation_map.at(proto.called_computation_ids(index));
   };
@@ -467,19 +480,9 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
           << "No fusion computation with id " << fusion_id;
       instruction =
           CreateFusion(shape, fusion_kind, all_operands(), fused_computation);
-      std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
-          output_to_operand_aliasing;
-      for (const auto& aliasing : proto.output_operand_aliasing()) {
-        output_to_operand_aliasing.emplace_back(
-            ShapeIndex(aliasing.output_shape_index().begin(),
-                       aliasing.output_shape_index().end()),
-            std::make_pair(aliasing.operand_index(),
-                           ShapeIndex(aliasing.operand_shape_index().begin(),
-                                      aliasing.operand_shape_index().end())));
-      }
       auto fusion_instr = DynCast<HloFusionInstruction>(instruction.get());
       fusion_instr->set_output_to_operand_aliasing(
-          std::move(output_to_operand_aliasing));
+          output_to_operand_aliasing());
       break;
     }
     case HloOpcode::kRng:
@@ -836,18 +839,8 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
       precision_config.mutable_operand_precision()->Resize(
           proto.operand_ids_size(), PrecisionConfig::DEFAULT);
       *custom_call_instr->mutable_precision_config() = precision_config;
-      std::vector<std::pair<ShapeIndex, std::pair<int64_t, ShapeIndex>>>
-          output_to_operand_aliasing;
-      for (const auto& aliasing : proto.output_operand_aliasing()) {
-        output_to_operand_aliasing.emplace_back(
-            ShapeIndex(aliasing.output_shape_index().begin(),
-                       aliasing.output_shape_index().end()),
-            std::make_pair(aliasing.operand_index(),
-                           ShapeIndex(aliasing.operand_shape_index().begin(),
-                                      aliasing.operand_shape_index().end())));
-      }
       custom_call_instr->set_output_to_operand_aliasing(
-          std::move(output_to_operand_aliasing));
+          output_to_operand_aliasing());
       custom_call_instr->set_custom_call_schedule(proto.custom_call_schedule());
       custom_call_instr->set_api_version(proto.custom_call_api_version());
       break;
@@ -1006,27 +999,38 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
           shape, operands(0), absl::MakeSpan(operand_vector).subspan(1));
       break;
     }
+    case HloOpcode::kCall: {
+      TF_RET_CHECK(proto.called_computation_ids_size() == 1)
+          << "Call should have 1 called computation but has "
+          << proto.called_computation_ids_size();
+      TF_RET_CHECK(!proto.has_precision_config())
+          << instruction->opcode() << proto.name();
+      TF_RET_CHECK(!proto.has_dot_dimension_numbers()) << instruction->opcode();
+
+      auto call_instruction = new HloCallInstruction(
+          shape, all_operands(),
+          computation_map.at(proto.called_computation_ids()[0]));
+      call_instruction->set_output_to_operand_aliasing(
+          output_to_operand_aliasing());
+      instruction = absl::WrapUnique(call_instruction);
+      break;
+    }
     default: {
       instruction = absl::WrapUnique(new HloInstruction(opcode, shape));
+      if (instruction->opcode() == HloOpcode::kWhile) {
+        TF_RET_CHECK(proto.called_computation_ids_size() == 2)
+            << "While should have 2 called computation but has "
+            << proto.called_computation_ids_size();
+      }
+
       for (const int64_t operand_id : proto.operand_ids()) {
         instruction->AppendOperand(instruction_map.at(operand_id));
       }
-      if (instruction->opcode() != HloOpcode::kFusion) {
-        if (instruction->opcode() == HloOpcode::kCall) {
-          TF_RET_CHECK(proto.called_computation_ids_size() == 1)
-              << "Call should have 1 called computation but has "
-              << proto.called_computation_ids_size();
-        }
-        if (instruction->opcode() == HloOpcode::kWhile) {
-          TF_RET_CHECK(proto.called_computation_ids_size() == 2)
-              << "While should have 2 called computation but has "
-              << proto.called_computation_ids_size();
-        }
-        for (const int64_t computation_id : proto.called_computation_ids()) {
-          instruction->called_computations_.push_back(
-              computation_map.at(computation_id));
-        }
+      for (const int64_t computation_id : proto.called_computation_ids()) {
+        instruction->called_computations_.push_back(
+            computation_map.at(computation_id));
       }
+
       TF_RET_CHECK(!proto.has_precision_config())
           << instruction->opcode() << proto.DebugString();
       TF_RET_CHECK(!proto.has_dot_dimension_numbers()) << instruction->opcode();
@@ -2398,12 +2402,12 @@ const HloInstruction* HloInstruction::LatestNonGteAncestor() const {
 }
 
 const HloInstruction* HloInstruction::operand(int64_t i) const {
-  return operands_.at(i);
+  return operands_[i];
 }
 
 HloInstruction* HloInstruction::mutable_operand(int64_t i) {
   CHECK(operands_[i] != nullptr);
-  return operands_.at(i);
+  return operands_[i];
 }
 
 int64_t HloInstruction::operand_index(const HloInstruction* target) const {
@@ -2860,6 +2864,54 @@ Status HloInstruction::ReplaceOperandWithDifferentShape(
   }
   new_operand->AddUser(this);
   return OkStatus();
+}
+
+// Copy all the instructions in the given fusion instruction into the fusion
+// instruction's parent computation and replace the use of the fusion
+// instruction with the copy of the fusion expression root.
+Status HloInstruction::Defuse() {
+  if (opcode() != HloOpcode::kFusion) {
+    return OkStatus();
+  }
+  VLOG(2) << "Defusing instruction: " << ToString();
+
+  HloComputation* fused_computation = fused_instructions_computation();
+
+  // A map from fused instruction to its defused clone.
+  absl::flat_hash_map<const HloInstruction*, HloInstruction*>
+      defused_instructions;
+  // Initialize map to contain the fusion instruction parameters mapping
+  // to the operands of the fusion instruction.
+  for (int64_t i = 0; i < operand_count(); ++i) {
+    defused_instructions[fused_computation->parameter_instruction(i)] =
+        mutable_operand(i);
+  }
+
+  // Create a clone of each instruction of the fused computation in the same
+  // computation as the fusion instruction itself.
+  // TODO(b/68227302): Moving instruction to new computation rather than
+  // cloning and deleting.
+  for (HloInstruction* fused_instruction :
+       fused_computation->MakeInstructionPostOrder()) {
+    if (fused_instruction->opcode() == HloOpcode::kParameter) {
+      continue;
+    }
+    std::vector<HloInstruction*> new_operands;
+    for (HloInstruction* operand : fused_instruction->operands()) {
+      new_operands.push_back(defused_instructions.at(operand));
+    }
+    HloInstruction* defused_instruction =
+        parent()->AddInstruction(fused_instruction->CloneWithNewOperands(
+            fused_instruction->shape(), new_operands));
+    defused_instructions[fused_instruction] = defused_instruction;
+  }
+
+  TF_RETURN_IF_ERROR(
+      ReplaceAllUsesWith(defused_instructions.at(fused_expression_root())));
+
+  HloModule* module = GetModule();
+  TF_RETURN_IF_ERROR(parent()->RemoveInstruction(this));
+  return module->RemoveEmbeddedComputation(fused_computation);
 }
 
 Status HloInstruction::ReplaceUsesWith(absl::Span<HloInstruction* const> users,

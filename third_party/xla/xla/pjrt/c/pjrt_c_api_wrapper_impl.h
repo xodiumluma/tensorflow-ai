@@ -29,6 +29,7 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
+#include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_device_description.h"
@@ -286,6 +287,8 @@ PJRT_Error* PJRT_Executable_OutputMemoryKinds(
 PJRT_Error* PJRT_Executable_OptimizedProgram(
     PJRT_Executable_OptimizedProgram_Args* args);
 PJRT_Error* PJRT_Executable_Serialize(PJRT_Executable_Serialize_Args* args);
+PJRT_Error* PJRT_Executable_GetCompiledMemoryStats(
+    PJRT_Executable_GetCompiledMemoryStats_Args* args);
 
 PJRT_Error* PJRT_LoadedExecutable_Destroy(
     PJRT_LoadedExecutable_Destroy_Args* args);
@@ -412,11 +415,9 @@ PJRT_TopologyDescription* CreateWrapperDeviceTopology(
 PJRT_Client* CreateWrapperClient(std::unique_ptr<xla::PjRtClient> cpp_client);
 
 // Helper functions for converting C key-value store callbacks to C++ callbacks.
-xla::PjRtClient::KeyValueGetCallback ToCppKeyValueGetCallback(
-    PJRT_KeyValueGetCallback c_callback, void* user_arg);
-
-xla::PjRtClient::KeyValuePutCallback ToCppKeyValuePutCallback(
-    PJRT_KeyValuePutCallback c_callback, void* user_arg);
+std::shared_ptr<xla::KeyValueStoreInterface> ToCppKeyValueStore(
+    PJRT_KeyValueGetCallback c_get_callback, void* get_user_arg,
+    PJRT_KeyValuePutCallback c_put_callback, void* put_user_arg);
 
 // A method that does not nothing other than returning a nullptr. Can be used as
 // the implementation of PJRT_Plugin_Initialize for plugins that do not require
@@ -592,6 +593,8 @@ constexpr PJRT_Api CreatePjrtApi(
       /*PJRT_Executable_Fingerprint=*/pjrt::PJRT_Executable_Fingerprint,
       /*PJRT_Client_TopologyDescription= */
       pjrt::PJRT_Client_TopologyDescription,
+      /*PJRT_Executable_GetCompiledMemoryStats= */
+      pjrt::PJRT_Executable_GetCompiledMemoryStats,
   };
 }
 

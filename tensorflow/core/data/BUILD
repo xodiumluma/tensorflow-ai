@@ -1,4 +1,3 @@
-load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_not_mobile",
@@ -8,6 +7,7 @@ load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_protos_all",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -393,7 +393,9 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/lib/core:status",
+        "//tensorflow/core/platform:stringpiece",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@local_tsl//tsl/platform:statusor",
     ],
 )
@@ -439,6 +441,7 @@ cc_library(
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:mutex",
         "@local_tsl//tsl/platform:thread_annotations",
+        "@local_tsl//tsl/platform:types",
     ],
 )
 
@@ -507,14 +510,15 @@ cc_library(
     deps = [
         ":dataset_utils",
         ":root_dataset",
+        ":serialization_utils",
         ":unbounded_thread_pool",
         "//tensorflow/core:all_kernels",
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:session_options",
-        "//tensorflow/core/data:serialization_utils",
         "//tensorflow/core/framework:graph_proto_cc",
         "@com_google_absl//absl/memory",
         "@local_tsl//tsl/platform:env",
@@ -637,14 +641,12 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "file_logger_client_interface",
-    hdrs = ["file_logger_client_interface.h"],
-    # copybara:uncomment visibility = ["//learning/processing/tf_data_logger/client:__subpackages__"],
-)
-
-cc_library(
-    name = "file_logger_client_no_op",
-    hdrs = ["file_logger_client_no_op.h"],
-    deps = [":file_logger_client_interface"],
+tf_cc_test(
+    name = "utils_test",
+    srcs = ["utils_test.cc"],
+    # copybara:uncomment extra_copts = ["-Wthread-safety-analysis"],
+    deps = [
+        ":utils",
+        "@com_google_googletest//:gtest_main",
+    ],
 )

@@ -5,6 +5,11 @@ load(
     "//xla/stream_executor:build_defs.bzl",
     "stream_executor_friends",
 )
+
+# copybara:comment_begin(oss-only)
+load("//xla/stream_executor/rocm:build_defs.bzl", "rocm_embedded_test_modules")
+
+# copybara:comment_end
 load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm_hipblaslt",
@@ -107,8 +112,6 @@ cc_library(
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/strings",
         "//xla/stream_executor",
-        "//xla/stream_executor:command_buffer",
-        "//xla/stream_executor:kernel",
         "//xla/stream_executor:plugin_registry",
         "//xla/stream_executor/gpu:gpu_activation_header",
         "//xla/stream_executor/gpu:gpu_event",
@@ -446,7 +449,7 @@ cc_library(
 )
 
 cc_library(
-    name = "hipblaslt_plugin",
+    name = "amdhipblaslt_plugin",
     srcs = if_rocm_is_configured(["hip_blas_lt.cc"]),
     hdrs = if_rocm_is_configured([
         "hip_blas_lt.h",
@@ -564,7 +567,7 @@ cc_library(
         ":rocm_driver",
         ":rocm_platform",
         ":rocm_helpers",
-        ":hipblaslt_plugin",
+        ":amdhipblaslt_plugin",
     ]),
     alwayslink = 1,
 )
@@ -591,3 +594,10 @@ cc_library(
         [":all_runtime"],
     ),
 )
+
+# copybara:comment_begin(oss-only)
+rocm_embedded_test_modules(
+    name = "add_i32_kernel",
+    srcs = if_rocm_is_configured(["add_i32_kernel.cu.cc"]),
+)
+# copybara:comment_end

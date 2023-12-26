@@ -320,6 +320,15 @@ tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
       args.number_of_shared_bytes(), hipstream, kernel_params, nullptr);
 }
 
+tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
+                                const BlockDim& block_dims,
+                                const ClusterDim& cluster_dims,
+                                const Kernel& kernel, const KernelArgs& args) {
+  if (cluster_dims.x != 1 || cluster_dims.y != 1 || cluster_dims.z != 1)
+    return tsl::errors::Unimplemented("Not implemented for ROCm");
+  return Launch(stream, thread_dims, block_dims, kernel, args);
+}
+
 tsl::Status GpuExecutor::Submit(Stream* stream,
                                 const CommandBuffer& command_buffer) {
   if (command_buffer.mode() != CommandBuffer::Mode::kPrimary) {
@@ -413,12 +422,6 @@ void GpuExecutor::VlogOccupancyInfo(const Kernel& kernel,
 DeviceMemoryBase GpuExecutor::Allocate(uint64_t size, int64_t memory_space) {
   CHECK_EQ(memory_space, 0);
   return DeviceMemoryBase(GpuDriver::DeviceAllocate(context_, size), size);
-}
-
-void* GpuExecutor::GetSubBuffer(DeviceMemoryBase* mem, uint64_t offset_bytes,
-                                uint64_t size_bytes) {
-  // offset and size are in bytes, so char* works as the pointer type.
-  return reinterpret_cast<char*>(mem->opaque()) + offset_bytes;
 }
 
 void GpuExecutor::Deallocate(DeviceMemoryBase* mem) {

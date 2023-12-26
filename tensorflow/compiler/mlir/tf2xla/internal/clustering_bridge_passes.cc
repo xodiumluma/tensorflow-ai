@@ -34,6 +34,8 @@ namespace internal {
 using mlir::OpPassManager;
 using mlir::func::FuncOp;
 
+// LINT.IfChange(tpu_bridge_passes)
+
 // Adds Bridge clustering pipeline passes to the given pass_manager. Does not
 // run them.
 void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
@@ -80,7 +82,6 @@ void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
   // Run TPU cluster cleanup attributes so ops with no outside compiled
   // attribute have no host device attribute.
   pm.addPass(mlir::TFTPU::CreateTPUClusterCleanupAttributesPass());
-  pm.addPass(mlir::TFDevice::CreateOutsideCompiledToHostLaunchPass());
   pm.addNestedPass<FuncOp>(mlir::TFDevice::CreateDeviceAttributeToLaunchPass());
   // Running canonicalizer before decomposing resource ops in cluster helps the
   // latter pass to converge faster as it does not have to spend time folding
@@ -97,10 +98,6 @@ void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
     func_pm.addPass(mlir::TFTPU::CreateTPUHostComputationExpansionPass());
     func_pm.addPass(mlir::TFTPU::CreateTPUUpdateEmbeddingEnqueueOpInputsPass());
   }
-  // TODO(b/173622615): This should incrementally be moved down as
-  // more passes support this representation and then can be removed once
-  // all passes support it.
-  pm.addPass(mlir::TFDevice::CreateHostLaunchToOutsideCompiledPass());
 
   // TODO(b/173622615): Once OutsideCompilation is represented by launch op and
   // the remaining passes including Inliner support it, remove this
@@ -109,9 +106,6 @@ void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
   // will be removed from launch causing an error.
   pm.addNestedPass<FuncOp>(mlir::TFDevice::CreateLaunchToDeviceAttributePass());
 
-  // TODO(b/173622615): This can be removed once more passes support outside
-  // compilation represented by op and conversion back to attribute is removed.
-  pm.addPass(mlir::TFDevice::CreateOutsideCompiledToHostLaunchPass());
   // Note that the region-based control-flow produced here still contains
   // function call ops which get inlined by the subsequent inliner pass.
   pm.addPass(mlir::TF::CreateTFFunctionalControlFlowToRegions());
@@ -137,11 +131,6 @@ void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
           ->tf_mlir_enable_merge_control_flow_pass) {
     pm.addPass(mlir::TFDevice::CreateMergeControlFlowPass());
   }
-
-  // TODO(b/173622615): This should incrementally be moved down as
-  // more passes support this representation and then can be removed once
-  // all passes support it.
-  pm.addPass(mlir::TFDevice::CreateHostLaunchToOutsideCompiledPass());
 
   pm.addPass(
       tensorflow::tf2xla::internal::CreateMarkOpsForOutsideCompilationPass());
@@ -169,9 +158,11 @@ void AddBridgeClusteringPipelinePasses(OpPassManager& pm,
   pm.addNestedPass<FuncOp>(
       tensorflow::tf2xla::internal::CreateVerifyClusteringPass());
 }
+// LINT.ThenChange(:non_tpu_bridge_passes)
 
 void NoCanonicalization(OpPassManager& pm) {}
 
+// LINT.IfChange(non_tpu_bridge_passes)
 void AddNonTPUBridgeClusteringPipelinePasses(OpPassManager& pm) {
   // The following ops must be preserved regardless of reachability. Ideally,
   // all graphs should have control dependencies to enforce this.
@@ -201,6 +192,8 @@ void AddNonTPUBridgeClusteringPipelinePasses(OpPassManager& pm) {
   pm.addNestedPass<FuncOp>(mlir::TF::CreateDecomposeReduceDatasetPass());
   pm.addPass(mlir::TFDevice::CreateEmbeddingPipeliningPass());
   pm.addPass(mlir::TFDevice::CreateEmbeddingSequencingPass());
+  pm.addPass(
+      tensorflow::tf2xla::internal::CreateXlaOutlineEntryFunctionsPass());
   // Encapsulate PartitionedCall ops within a cluster so that the composite
   // resource ops can be decomposed.
   pm.addPass(tensorflow::tf2xla::internal::CreateXlaClusterFormationPass());
@@ -247,6 +240,7 @@ void AddNonTPUBridgeClusteringPipelinePasses(OpPassManager& pm) {
   pm.addNestedPass<FuncOp>(
       tensorflow::tf2xla::internal::CreateVerifyClusteringPass());
 }
+// LINT.ThenChange(:tpu_bridge_passes)
 
 };  // namespace internal
 };  // namespace tf2xla

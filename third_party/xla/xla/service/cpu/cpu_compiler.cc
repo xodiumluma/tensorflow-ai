@@ -70,6 +70,7 @@ limitations under the License.
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"  // from @llvm-project
 #include "mlir/Dialect/Linalg/IR/Linalg.h"  // from @llvm-project
+#include "mlir/Dialect/MemRef/Transforms/AllocationOpInterfaceImpl.h"  // from @llvm-project
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"  // from @llvm-project
 #include "mlir/Dialect/SCF/IR/SCF.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
@@ -114,7 +115,6 @@ limitations under the License.
 #include "xla/runtime/executable.h"
 #include "xla/runtime/jit_executable.h"
 #include "xla/service/algebraic_simplifier.h"
-#include "xla/service/all_gather_decomposer.h"
 #include "xla/service/all_reduce_promotion.h"
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batch_dot_simplification.h"
@@ -189,9 +189,9 @@ limitations under the License.
 #include "xla/service/map_inliner.h"
 #include "xla/service/operand_upcaster.h"
 #include "xla/service/optimization_barrier_expander.h"
+#include "xla/service/optimize_input_output_buffer_alias.h"
 #include "xla/service/qr_expander.h"
 #include "xla/service/reduce_decomposer.h"
-#include "xla/service/reduce_scatter_decomposer.h"
 #include "xla/service/reshape_decomposer.h"
 #include "xla/service/reshape_mover.h"
 #include "xla/service/result_caster.h"
@@ -235,7 +235,8 @@ limitations under the License.
 #include "tsl/platform/statusor.h"
 
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
-#include "xla/service/cpu/onednn_rewriter.h"
+#include "xla/service/cpu/onednn_matmul_rewriter.h"
+#include "xla/service/cpu/onednn_ops_rewriter.h"
 #endif
 
 namespace {
@@ -254,22 +255,22 @@ void LoadMLIRDialects(mlir::MLIRContext& context) {
                       xla::runtime::RuntimeDialect>();
   mlir::registerBuiltinDialectTranslation(context);
   mlir::registerLLVMDialectTranslation(context);
+
+  mlir::DialectRegistry registry;
+  mlir::memref::registerAllocationOpInterfaceExternalModels(registry);
+  context.appendDialectRegistry(registry);
 }
 
 xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
     llvm::Triple target_triple, llvm::StringRef cpu_name) {
   xla::cpu::HloXlaRuntimePipelineOptions options;
-  options.enable_tiling_and_fusion =
-      xla::GetDebugOptionsFromFlags().xla_cpu_enable_mlir_tiling_and_fusion();
+  options.enable_tiling_and_fusion = false;
   if (xla::GetDebugOptionsFromFlags().xla_cpu_enable_custom_matmul_tiling()) {
     options.matmul_tile_sizes = {
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_m_dim(),
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_n_dim(),
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_k_dim()};
   }
-  options.experimental_deallocation =
-      xla::GetDebugOptionsFromFlags()
-          .xla_cpu_enable_experimental_deallocation();
   options.enable_avx2 = [&] {
     // Derive whether this is an x86 CPU with AVX2 enabled.
     if (!target_triple.isX86()) return false;
@@ -280,7 +281,6 @@ xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
   options.cpu_name = cpu_name;
   if (xla::GetDebugOptionsFromFlags().xla_cpu_enable_mlir_fusion_outlining()) {
     options.enable_fusion_outlining = true;
-    options.experimental_deallocation = true;
   }
   return options;
 }
@@ -435,7 +435,7 @@ runtime::JitExecutable::Options GetXlaRuntimeJitExecutableOptions(
 
 StatusOr<std::unique_ptr<Executable>>
 CpuXlaRuntimeAotCompilationResult::LoadExecutable(
-    Compiler* compiler, se::StreamExecutor* executor) {
+    Compiler* compiler, const se::StreamExecutor* executor) const {
   XlaRuntimeExecutableProto xla_runtime_executable =
       xla_runtime_cpu_executable_.xla_runtime_executable();
   TF_ASSIGN_OR_RETURN(HloModuleConfig hlo_module_config,
@@ -685,9 +685,7 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   pipeline.AddPass<QrExpander>();
   pipeline.AddPass<EighExpander>();
   pipeline.AddPass<TriangularSolveExpander>();
-  pipeline.AddPass<AllGatherDecomposer>();
   pipeline.AddPass<AllToAllDecomposer>();
-  pipeline.AddPass<ReduceScatterDecomposer>();
   pipeline.AddPass<StochasticConvertDecomposer>();
 
   // Inline computations with a single call site.
@@ -699,8 +697,12 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
 #if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
   // AOT compiled code runs in single thread.
   if (!is_aot_compile) {
-    // Temporarily disabling oneDNN rewriter because it causes JAX regression.
-    // pipeline.AddPass<OneDnnRewriter>();
+    // Placing OneDnnOpsRewriter here to match the flax patterns
+    // TODO: Decide where would be the appropriate place for this pass to make
+    // it more generic
+    // TODO - intel: Name of the pass might seem redundant as oneDnnRewriter,
+    // but in future plan to rename oneDNNrewriter to specific to onednn matmul
+    pipeline.AddPass<OneDnnOpsRewriter>();
   }
 #endif  // INTEL_MKL && ENABLE_ONEDNN_V3
 
@@ -895,6 +897,13 @@ Status CpuCompiler::RunHloPassesAfterLayoutAssn(
 
   pipeline.AddPass<ReshapeDecomposer>();
 
+#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+  // AOT compiled code runs in single thread.
+  if (!is_aot_compile) {
+    pipeline.AddPass<OneDnnMatMulRewriter>();
+  }
+#endif  // INTEL_MKL && ENABLE_ONEDNN_V3
+
   // Add a fusion pass now that layout assignment is done.
   pipeline.AddPass<CpuInstructionFusion>();
 
@@ -942,6 +951,7 @@ Status CpuCompiler::RunHloPassesAfterLayoutAssn(
   // before (and sometime after) copy insertion, to avoid dead code from
   // interfering with the rewrites.
   pipeline.AddPass<HloDCE>();
+  pipeline.AddPass<OptimizeInputOutputBufferAlias>(true);
   pipeline.AddPass<CopyInsertion>();
   pipeline.AddPass<HloDCE>();
   return pipeline.Run(module).status();
@@ -1084,7 +1094,7 @@ StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
 }
 
 StatusOr<std::unique_ptr<BufferAssignment>> CpuCompiler::AssignBuffers(
-    HloModule* module, se::StreamExecutor* /*stream_exec*/) {
+    HloModule* module, const se::StreamExecutor* /*stream_exec*/) {
   // Select an order for emitting the HLO instructions for each computation.
   // Using this sequence enables tighter buffer liveness analysis and reduced
   // memory usage (as compared to using DependencyHloOrdering).

@@ -27,6 +27,7 @@ limitations under the License.
 #include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "stablehlo/dialect/StablehloOps.h"  // from @stablehlo
 #include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
+#include "tensorflow/compiler/mlir/quantization/common/test_base.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/core/platform/test.h"
@@ -34,42 +35,9 @@ limitations under the License.
 namespace mlir::quant::stablehlo {
 namespace {
 
-class IsOpQuantizableStableHloTest : public ::testing::Test {
- protected:
-  IsOpQuantizableStableHloTest() {
-    ctx_.loadDialect<arith::ArithDialect, mlir::stablehlo::StablehloDialect,
-                     func::FuncDialect, TF::TensorFlowDialect,
-                     quant::QuantizationDialect,
-                     quantfork::QuantizationForkDialect>();
-  }
+using ::mlir::quant::common::QuantizationTestBase;
 
-  // Parses `module_op_str` to create a `ModuleOp`. Checks whether the created
-  // module op is valid.
-  OwningOpRef<ModuleOp> ParseModuleOpString(
-      const absl::string_view module_op_str) {
-    auto module_op_ref = parseSourceString<ModuleOp>(module_op_str, &ctx_);
-    EXPECT_TRUE(module_op_ref);
-    return module_op_ref;
-  }
-
-  // Gets the function with the given name from the module.
-  func::FuncOp GetFunctionFromModule(ModuleOp module,
-                                     absl::string_view function_name) {
-    SymbolTable symbol_table(module);
-    return symbol_table.lookup<func::FuncOp>(function_name);
-  }
-
-  // Returns the first operation with the given type in the function.
-  template <typename OpType>
-  OpType FindOperationOfType(func::FuncOp function) {
-    for (auto op : function.getBody().getOps<OpType>()) {
-      return op;
-    }
-    return nullptr;
-  }
-
-  mlir::MLIRContext ctx_{};
-};
+class IsOpQuantizableStableHloTest : public QuantizationTestBase {};
 
 // Quantizable ops: constants
 // Non-quantizable ops: normal StableHLO ops and terminators
@@ -111,7 +79,7 @@ constexpr absl::string_view module_composite_no_attr = R"mlir(
   }
 )mlir";
 
-TEST_F(IsOpQuantizableStableHloTest, ConstantOp) {
+TEST_F(IsOpQuantizableStableHloTest, ConstantOpQuantizable) {
   OwningOpRef<ModuleOp> module_op_ref =
       ParseModuleOpString(module_constant_add);
   func::FuncOp test_func =
@@ -124,7 +92,7 @@ TEST_F(IsOpQuantizableStableHloTest, ConstantOp) {
   EXPECT_TRUE(is_constant_quantizable);
 }
 
-TEST_F(IsOpQuantizableStableHloTest, TerminatorOp) {
+TEST_F(IsOpQuantizableStableHloTest, TerminatorOpNotQuantizable) {
   OwningOpRef<ModuleOp> module_op_ref =
       ParseModuleOpString(module_constant_add);
   func::FuncOp test_func =
@@ -136,45 +104,7 @@ TEST_F(IsOpQuantizableStableHloTest, TerminatorOp) {
   EXPECT_FALSE(is_return_quantizable);
 }
 
-TEST_F(IsOpQuantizableStableHloTest, NonSameScaleStableHloOp) {
-  OwningOpRef<ModuleOp> module_op_ref =
-      ParseModuleOpString(module_constant_add);
-  func::FuncOp test_func =
-      GetFunctionFromModule(*module_op_ref, "constant_add");
-  Operation* add_op = FindOperationOfType<mlir::stablehlo::AddOp>(test_func);
-  bool is_add_quantizable =
-      mlir::quant::stablehlo::IsOpQuantizableStableHlo(add_op);
-
-  EXPECT_FALSE(is_add_quantizable);
-}
-
-TEST_F(IsOpQuantizableStableHloTest, QuantizableXlaCallModuleOp) {
-  OwningOpRef<ModuleOp> module_op_ref =
-      ParseModuleOpString(module_composite_same_scale);
-  func::FuncOp test_func =
-      GetFunctionFromModule(*module_op_ref, "same_scale_after_composite");
-  Operation* xla_call_module_op =
-      FindOperationOfType<TF::XlaCallModuleOp>(test_func);
-  bool is_xla_call_module_quantizable =
-      mlir::quant::stablehlo::IsOpQuantizableStableHlo(xla_call_module_op);
-
-  EXPECT_TRUE(is_xla_call_module_quantizable);
-}
-
-TEST_F(IsOpQuantizableStableHloTest, NonQuantizableXlaCallModuleOp) {
-  OwningOpRef<ModuleOp> module_op_ref =
-      ParseModuleOpString(module_composite_no_attr);
-  func::FuncOp test_func =
-      GetFunctionFromModule(*module_op_ref, "composite_without_attr");
-  Operation* xla_call_module_op =
-      FindOperationOfType<TF::XlaCallModuleOp>(test_func);
-  bool is_xla_call_module_quantizable =
-      mlir::quant::stablehlo::IsOpQuantizableStableHlo(xla_call_module_op);
-
-  EXPECT_FALSE(is_xla_call_module_quantizable);
-}
-
-TEST_F(IsOpQuantizableStableHloTest, SameScaleStableHloOp) {
+TEST_F(IsOpQuantizableStableHloTest, SameScaleOpQuantizable) {
   OwningOpRef<ModuleOp> module_op_ref =
       ParseModuleOpString(module_composite_same_scale);
   func::FuncOp test_func =
@@ -187,7 +117,45 @@ TEST_F(IsOpQuantizableStableHloTest, SameScaleStableHloOp) {
   EXPECT_TRUE(is_reshape_quantizable);
 }
 
-TEST_F(IsOpQuantizableStableHloTest, QuantizeDequantizeOp) {
+TEST_F(IsOpQuantizableStableHloTest, NonSameScaleOpNotQuantizable) {
+  OwningOpRef<ModuleOp> module_op_ref =
+      ParseModuleOpString(module_constant_add);
+  func::FuncOp test_func =
+      GetFunctionFromModule(*module_op_ref, "constant_add");
+  Operation* add_op = FindOperationOfType<mlir::stablehlo::AddOp>(test_func);
+  bool is_add_quantizable =
+      mlir::quant::stablehlo::IsOpQuantizableStableHlo(add_op);
+
+  EXPECT_FALSE(is_add_quantizable);
+}
+
+TEST_F(IsOpQuantizableStableHloTest, ValidXlaCallModuleOpQuantizable) {
+  OwningOpRef<ModuleOp> module_op_ref =
+      ParseModuleOpString(module_composite_same_scale);
+  func::FuncOp test_func =
+      GetFunctionFromModule(*module_op_ref, "same_scale_after_composite");
+  Operation* xla_call_module_op =
+      FindOperationOfType<TF::XlaCallModuleOp>(test_func);
+  bool is_xla_call_module_quantizable =
+      mlir::quant::stablehlo::IsOpQuantizableStableHlo(xla_call_module_op);
+
+  EXPECT_TRUE(is_xla_call_module_quantizable);
+}
+
+TEST_F(IsOpQuantizableStableHloTest, InvalidXlaCallModuleOpNotQuantizable) {
+  OwningOpRef<ModuleOp> module_op_ref =
+      ParseModuleOpString(module_composite_no_attr);
+  func::FuncOp test_func =
+      GetFunctionFromModule(*module_op_ref, "composite_without_attr");
+  Operation* xla_call_module_op =
+      FindOperationOfType<TF::XlaCallModuleOp>(test_func);
+  bool is_xla_call_module_quantizable =
+      mlir::quant::stablehlo::IsOpQuantizableStableHlo(xla_call_module_op);
+
+  EXPECT_FALSE(is_xla_call_module_quantizable);
+}
+
+TEST_F(IsOpQuantizableStableHloTest, QuantizeDequantizeOpNotQuantizable) {
   OwningOpRef<ModuleOp> module_op_ref =
       ParseModuleOpString(module_composite_same_scale);
   func::FuncOp test_func =

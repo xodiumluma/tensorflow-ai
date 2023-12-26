@@ -27,6 +27,7 @@ limitations under the License.
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/c_api_internal.h"  // IWYU pragma: keep
 #include "xla/ffi/call_frame.h"
+#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/status.h"
 #include "xla/statusor.h"
@@ -42,6 +43,7 @@ struct XLA_FFI_Error {
 
 struct XLA_FFI_ExecutionContext {
   const xla::ServiceExecutableRunOptions* run_options;
+  const xla::HloComputation* called_computation;
 };
 
 //===----------------------------------------------------------------------===//
@@ -63,14 +65,16 @@ Status TakeStatus(XLA_FFI_Error* error) {
 }
 
 Status Call(Ffi& handler, CallFrame& call_frame, const CallOptions& options) {
-  XLA_FFI_ExecutionContext ctx = {options.run_options};
+  XLA_FFI_ExecutionContext ctx = {options.run_options,
+                                  options.called_computation};
   XLA_FFI_CallFrame ffi_call_frame = call_frame.Build(GetXlaFfiApi(), &ctx);
   return TakeStatus(handler.Call(&ffi_call_frame));
 }
 
 Status Call(XLA_FFI_Handler* handler, CallFrame& call_frame,
             const CallOptions& options) {
-  XLA_FFI_ExecutionContext ctx = {options.run_options};
+  XLA_FFI_ExecutionContext ctx = {options.run_options,
+                                  options.called_computation};
   XLA_FFI_CallFrame ffi_call_frame = call_frame.Build(GetXlaFfiApi(), &ctx);
   return TakeStatus((*handler)(&ffi_call_frame));
 }
@@ -183,6 +187,18 @@ static XLA_FFI_Error* XLA_FFI_Error_Create(XLA_FFI_Error_Create_Args* args) {
   return new XLA_FFI_Error{Status(ToStatusCode(args->errc), args->message)};
 }
 
+static void XLA_FFI_Error_GetMessage(XLA_FFI_Error_GetMessage_Args* args) {
+  Status struct_size_check = ActualStructSizeIsGreaterOrEqual(
+      "XLA_FFI_Error_GetMessage", XLA_FFI_Error_GetMessage_Args_STRUCT_SIZE,
+      args->struct_size);
+  if (!struct_size_check.ok()) {
+    LOG(ERROR) << struct_size_check.message();
+  }
+  // absl::Status owns error message in a std::string which guarantees that
+  // we'll get a null terminated string.
+  args->message = args->error->status.message().data();
+}
+
 static void XLA_FFI_Error_Destroy(XLA_FFI_Error_Destroy_Args* args) {
   Status struct_size_check = ActualStructSizeIsGreaterOrEqual(
       "XLA_FFI_Error_Destroy", XLA_FFI_Error_Destroy_Args_STRUCT_SIZE,
@@ -229,6 +245,10 @@ static void* XLA_FFI_ServiceExecutableRunOptions_Get(
   return const_cast<ServiceExecutableRunOptions*>(ctx->run_options);
 }
 
+static void* XLA_FFI_CalledComputation_Get(XLA_FFI_ExecutionContext* ctx) {
+  return const_cast<HloComputation*>(ctx->called_computation);
+}
+
 //===----------------------------------------------------------------------===//
 // XLA FFI Api access
 //===----------------------------------------------------------------------===//
@@ -236,6 +256,7 @@ static void* XLA_FFI_ServiceExecutableRunOptions_Get(
 static XLA_FFI_InternalApi internal_api = {
     XLA_FFI_Error_Forward,
     XLA_FFI_ServiceExecutableRunOptions_Get,
+    XLA_FFI_CalledComputation_Get,
 };
 
 static XLA_FFI_Api api = {
@@ -245,6 +266,7 @@ static XLA_FFI_Api api = {
     &internal_api,
 
     XLA_FFI_Error_Create,      // creates error
+    XLA_FFI_Error_GetMessage,  // get error message
     XLA_FFI_Error_Destroy,     // frees error
     XLA_FFI_Handler_Register,  // registers handler
     XLA_FFI_Stream_Get,        // returns platform specific stream

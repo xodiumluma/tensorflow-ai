@@ -150,9 +150,9 @@ def _tf_repositories():
     # LINT.IfChange
     tf_http_archive(
         name = "XNNPACK",
-        sha256 = "88e0158aff1e1498e34dfcaf08d948a73a3246a04fe96e548da71f6b9245a009",
-        strip_prefix = "XNNPACK-c7e7cde37615a81a529c326aa278bfab4cd6fe5a",
-        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/c7e7cde37615a81a529c326aa278bfab4cd6fe5a.zip"),
+        sha256 = "36b2569789380cd72fbdd201a403f08b1b7a92f4102ae49c8a29386dd90ca202",
+        strip_prefix = "XNNPACK-a68aa0a24b0d3e1c75f2f7c0915b70121cee0470",
+        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/a68aa0a24b0d3e1c75f2f7c0915b70121cee0470.zip"),
     )
     # LINT.ThenChange(//tensorflow/lite/tools/cmake/modules/xnnpack.cmake)
 
@@ -172,9 +172,9 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "cpuinfo",
-        strip_prefix = "cpuinfo-959002f82d7962a473d8bf301845f2af720e0aa4",
-        sha256 = "a0f53ccfb477c57753c595df02bf79ed67bf092fd9a5c61ec5b8992b81bc1e65",
-        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/959002f82d7962a473d8bf301845f2af720e0aa4.zip"),
+        strip_prefix = "cpuinfo-ef634603954d88d2643d5809011288b890ac126e",
+        sha256 = "e07512a11e1c71687359a133f49d60583d7465b737fe5dbe11f461c9aaa72a2b",
+        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/ef634603954d88d2643d5809011288b890ac126e.zip"),
     )
 
     tf_http_archive(
@@ -184,6 +184,14 @@ def _tf_repositories():
         sha256 = "d8dba9e2607a0c256aa8eacb45b39986ab6f3f24a4d431d4397047a3cb0cd4fb",
         strip_prefix = "cudnn-frontend-0.9",
         urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v0.9.zip"),
+    )
+
+    tf_http_archive(
+        name = "cutlass_archive",
+        build_file = "//third_party:cutlass.BUILD",
+        sha256 = "84cf3fcc47c440a8dde016eb458f8d6b93b3335d9c3a7a16f388333823f1eae0",
+        strip_prefix = "cutlass-afa7b7241aabe598b725c65480bd9fa71121732c",
+        urls = tf_mirror_urls("https://github.com/chsigg/cutlass/archive/afa7b7241aabe598b725c65480bd9fa71121732c.tar.gz"),
     )
 
     tf_http_archive(
@@ -507,9 +515,9 @@ def _tf_repositories():
         name = "nccl_archive",
         build_file = "//third_party:nccl/archive.BUILD",
         patch_file = ["//third_party/nccl:archive.patch"],
-        sha256 = "16ac98f3e926c024ce48e10ab220e19ce734adc48c423cfd55ad6f509bd1179f",
-        strip_prefix = "nccl-2.18.5-1",
-        urls = tf_mirror_urls("https://github.com/nvidia/nccl/archive/v2.18.5-1.tar.gz"),
+        sha256 = "1c5474553afedb88e878c772f13d6f90b9226b3f2971dfa6f873adb9443100c2",
+        strip_prefix = "nccl-2.19.3-1",
+        urls = tf_mirror_urls("https://github.com/nvidia/nccl/archive/v2.19.3-1.tar.gz"),
     )
 
     java_import_external(

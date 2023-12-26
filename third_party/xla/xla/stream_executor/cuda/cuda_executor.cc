@@ -13,9 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
+
+#include "absl/synchronization/mutex.h"
+#include "third_party/gpus/cuda/include/cuda.h"
+#include "xla/stream_executor/gpu/gpu_stream.h"
 
 #if defined(PLATFORM_WINDOWS)
 #include <windows.h>
@@ -239,6 +245,10 @@ tsl::Status GpuExecutor::GetKernel(const MultiKernelLoaderSpec& spec,
                                      cuda_kernel->gpu_function_ptr()));
   }
 
+  // Update CUDA kernel properties after it was loaded in the CUDA context.
+  cuda_kernel->set_name(*kernel_name);
+  cuda_kernel->set_gpu_context(context_);
+
   // We have to trust the kernel loader spec arity because there doesn't appear
   // to be a way to reflect on the number of expected arguments w/the CUDA API.
   cuda_kernel->set_arity(spec.arity());
@@ -416,6 +426,21 @@ tsl::Status GpuExecutor::GetKernelMetadata(GpuKernel* cuda_kernel,
 tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
                                 const BlockDim& block_dims,
                                 const Kernel& kernel, const KernelArgs& args) {
+  return Launch(stream, thread_dims, block_dims, std::nullopt, kernel, args);
+}
+
+tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
+                                const BlockDim& block_dims,
+                                const ClusterDim& cluster_dims,
+                                const Kernel& kernel, const KernelArgs& args) {
+  return Launch(stream, thread_dims, block_dims,
+                std::make_optional(cluster_dims), kernel, args);
+}
+
+tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
+                                const BlockDim& block_dims,
+                                const std::optional<ClusterDim>& cluster_dims,
+                                const Kernel& kernel, const KernelArgs& args) {
   CUstream custream = AsGpuStreamValue(stream);
   const GpuKernel* cuda_kernel = AsGpuKernel(&kernel);
   CUfunction cufunc = cuda_kernel->AsGpuFunctionHandle();
@@ -444,10 +469,21 @@ tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
     CHECK_EQ(kernel.Arity() + (packed.number_of_shared_bytes() > 0),
              packed.number_of_arguments());
     void** params = const_cast<void**>(packed.argument_addresses().data());
-    return GpuDriver::LaunchKernel(
-        context_, kernel.name(), cufunc, block_dims.x, block_dims.y,
-        block_dims.z, thread_dims.x, thread_dims.y, thread_dims.z,
-        args.number_of_shared_bytes(), custream, params, nullptr /* = extra */);
+
+    if (cluster_dims.has_value()) {
+      return GpuDriver::LaunchKernel(
+          context_, kernel.name(), cufunc, cluster_dims->x, cluster_dims->y,
+          cluster_dims->z, block_dims.x, block_dims.y, block_dims.z,
+          thread_dims.x, thread_dims.y, thread_dims.z,
+          packed.number_of_shared_bytes(), custream, params,
+          /*extra=*/nullptr);
+    } else {
+      return GpuDriver::LaunchKernel(
+          context_, kernel.name(), cufunc, block_dims.x, block_dims.y,
+          block_dims.z, thread_dims.x, thread_dims.y, thread_dims.z,
+          packed.number_of_shared_bytes(), custream, params,
+          /*extra=*/nullptr);
+    }
   };
 
   // If arguments are already packed we can just launch the kernel.
@@ -458,12 +494,13 @@ tsl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
   // For device memory array we rely on a custom kernel arguments packing.
   if (auto* device_mem = DynCast<KernelArgsDeviceMemoryArray>(&args)) {
     auto& pack = kernel.kernel_args_packing();
-    if (!pack)
+    if (!pack) {
       return absl::InternalError(
           "Kernel is missing a custom arguments packing function for device "
           "memory arguments array");
+    }
 
-    TF_ASSIGN_OR_RETURN(auto packed, pack(*device_mem));
+    TF_ASSIGN_OR_RETURN(auto packed, pack(kernel, *device_mem));
     return launch(*packed);
   }
 
@@ -564,12 +601,6 @@ int GpuExecutor::CompareOccupancy(int* initial_blocks,
 DeviceMemoryBase GpuExecutor::Allocate(uint64_t size, int64_t memory_space) {
   CHECK_EQ(memory_space, 0);
   return DeviceMemoryBase(GpuDriver::DeviceAllocate(context_, size), size);
-}
-
-void* GpuExecutor::GetSubBuffer(DeviceMemoryBase* mem, uint64_t offset_bytes,
-                                uint64_t size_bytes) {
-  // offset and size are in bytes, so char* works as the pointer type.
-  return reinterpret_cast<char*>(mem->opaque()) + offset_bytes;
 }
 
 void GpuExecutor::Deallocate(DeviceMemoryBase* mem) {
@@ -994,8 +1025,7 @@ GpuExecutor::CreateDeviceDescription(int device_ordinal) {
   internal::DeviceDescriptionBuilder builder;
 
   {
-    int driver_version = 0;
-    (void)GpuDriver::GetDriverVersion(&driver_version);
+    int driver_version = GpuDriver::GetDriverVersion().value_or(0);
     std::string augmented_driver_version = absl::StrFormat(
         "%d (%s)", driver_version,
         cuda::DriverVersionStatusToString(Diagnostician::FindDsoVersion()));

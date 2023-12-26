@@ -19,20 +19,21 @@ limitations under the License.
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
 #include "mlir/IR/Operation.h"  // from @llvm-project
+#include "xla/executable_run_options.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/service_executable_run_options.h"
+#include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "tsl/platform/status.h"
 
 namespace xla {
 namespace gpu {
@@ -72,6 +73,7 @@ class Thunk {
     kCubSort,
     kCublasLtMatmul,
     kCustomCall,
+    kCustomKernel,
     kFft,
     kFor,
     kGemm,
@@ -98,9 +100,13 @@ class Thunk {
     kNcclRecv,
     kNorm,
     kOutfeed,
-    kReplicaId,
     kPartitionId,
+    kRecv,
+    kRecvDone,
+    kReplicaId,
     kSequential,
+    kSend,
+    kSendDone,
     kTriangularSolve,
     kWhile,
     kFusedMHA
@@ -159,13 +165,30 @@ class Thunk {
   struct ExecuteParams {
     ExecuteParams(const ServiceExecutableRunOptions& run_options,
                   const BufferAllocations& buffer_allocations,
-                  se::Stream* stream,
+                  se::Stream* stream, se::Stream* command_buffer_trace_stream,
                   absl::Span<se::Stream* const> async_streams);
 
     const BufferAllocations* buffer_allocations;  // never null
+
+    // Main compute stream on which thunks launch operations.
     se::Stream* stream;
+
+    // Auxiliary stream for tracing command buffers. We use a separate stream to
+    // avoid accidental tracing of unrelated activities on a main stream.
+    se::Stream* command_buffer_trace_stream;
+
+    // Streams for asynchronous collective communications.
     absl::InlinedVector<se::Stream*, kAsyncStreamTotal> async_comms_streams;
+
     NcclExecuteParams nccl_params;
+
+    // Streams for moving data between host and device.
+    se::Stream* device_to_host_stream;
+    se::Stream* host_to_device_stream;
+
+    // Send/Recv callbacks passed to XLA from PjRt.
+    SendDeviceMemoryFunction* send_device_memory_function;
+    RecvDeviceMemoryFunction* recv_device_memory_function;
   };
 
   // Execute the kernel for the thunk on the given stream. This method must be

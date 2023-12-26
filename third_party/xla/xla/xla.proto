@@ -445,19 +445,8 @@ message DebugOptions {
   // if `xla_gpu_enable_custom_fusion` set to true.
   string xla_gpu_enable_custom_fusions_re = 264;
 
-  // If true, use OpenXLA runtime for XLA:GPU backend. That is, use IREE VM
-  // as a host executable, optional CUDA HAL for dispatching device kernels and
-  // custom modules for integration with libraries required for running
-  // XLA:GPU programs.
-  //
-  // Note: this mode disables thunks and the "classic" gpu runtime, which
-  // is defined above.
-  bool xla_gpu_enable_gpu2_runtime = 233;
-
-  // If true, use OpenXLA hardware abstraction layer (aka CUDA HAL) to dispatch
-  // device kernels, otherwise use StreamExecutor kernel launch APIs. Has any
-  // effect only if `xla_gpu_enable_gpu2_runtime` is set to true.
-  bool xla_gpu_enable_gpu2_hal = 234;
+  reserved 233;  // was xla_gpu_enable_gpu2_runtime
+  reserved 234;  // was xla_gpu_enable_gpu2_hal
 
   // Timeout in seconds before terminating jobs that are stuck in a NCCL
   // Rendezvous. Negative value disables the timeout and will not terminate.
@@ -478,6 +467,7 @@ message DebugOptions {
     CUBLAS = 2;
     CUDNN = 3;
     NCCL = 4;
+    WHILE = 5;
   }
 
   // Determine the types of commands that are recorded into command buffers.
@@ -592,6 +582,9 @@ message DebugOptions {
 
   bool xla_gpu_enable_cudnn_int8x32_convolution_reordering = 189;
 
+  // Creates triton fusion for all supported gemms.
+  // To make sure only triton gemm is chosen by the autotuner run with
+  // `xla_gpu_cublas_fallback` set to false.
   bool xla_gpu_triton_gemm_any = 190;
 
   reserved 211;  // Was xla_gpu_enable_dot_strength_reduction
@@ -641,7 +634,6 @@ message DebugOptions {
 
   bool xla_gpu_enable_split_k_autotuning = 241;
 
-  bool xla_gpu_single_wave_autotuning = 242;
   // Whether reduction epilogue fusion is enabled in fusion passes.
   bool xla_gpu_enable_reduction_epilogue_fusion = 243;
   // Allow early return when acquiring NCCL cliques.
@@ -689,13 +681,18 @@ message DebugOptions {
   // xla_gpu_allow_all_reduce_kernel
   // xla_gpu_enable_experimental_block_size
   // xla_gpu_graph_level
-  reserved 5, 117, 133, 139, 176, 178, 180, 193, 214, 194;
+  // xla_gpu_single_wave_autotuning
+  reserved 5, 117, 133, 139, 176, 178, 180, 193, 214, 194, 242;
 }
 
 // Contains flags which affects the GPU compilation result.
 // These flags are part of Debug Options as of now, and will be migrated to
 // this proto.
-message GpuCompilationEnvironment {}
+message GpuCompilationEnvironment {
+  // Temporary dummy flag is added to test the flow.
+  // To be removed when we add flags here.
+  int64 dummy_flag = 1;
+}
 
 message ShardableValueUpdatePairProto {
   int64 input_parameter_number = 1;

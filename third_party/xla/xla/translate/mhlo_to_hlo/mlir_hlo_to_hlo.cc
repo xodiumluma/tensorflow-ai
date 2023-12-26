@@ -88,7 +88,7 @@ limitations under the License.
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
 #include "xla/types.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/float8.h"
+#include "tsl/platform/ml_dtypes.h"
 #include "tsl/platform/statusor.h"
 
 using ::int64_t;
@@ -834,6 +834,11 @@ bool SimplyReturnedOp(mlir::Operation* op) {
 namespace mlir {
 namespace mhlo {
 namespace {
+
+LogicalResult ExportXlaOp(CollectiveBroadcastOp, OpLoweringContext) {
+  // TODO: b/314330871 - Implement MHLO export for CollectiveBroadcastOp.
+  return failure();
+}
 
 LogicalResult ExportXlaOp(ComputeReshapeShapeOp, OpLoweringContext) {
   // This op should've been removed during PrepareForExport.
@@ -3228,6 +3233,15 @@ LogicalResult ConvertToHloModule::RunOnFunction(mlir::func::FuncOp f) {
       any_arg_replicated |= entry_args_same_across_replicas.back();
       // Pass the alias info to the builder so that it will build the alias info
       // into the resulting HloModule.
+      auto buffer_donor =
+          f.getArgAttrOfType<mlir::BoolAttr>(i, "jax.buffer_donor");
+      if (buffer_donor) {
+        if (use_tuple_args_) {
+          builder.AddBufferDonor(/*param_number=*/0, /*param_index=*/{i});
+        } else {
+          builder.AddBufferDonor(/*param_number=*/i, /*param_index=*/{});
+        }
+      }
       auto aliasing_output =
           f.getArgAttrOfType<mlir::IntegerAttr>(i, "tf.aliasing_output");
       if (!aliasing_output) continue;
