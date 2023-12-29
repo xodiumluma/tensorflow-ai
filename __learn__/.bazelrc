@@ -12,27 +12,57 @@
 #   ios:
 #   ios_armv7:
 #   ios_arm64:
-#   ios_i386:
 #   ios_x86_64:
 #   ios_fat:
 #
 # macos options
 #   darwin_arm64:
 #
-# compiler options:
-#   cuda_clang:         Use clang for building CUDA code
-#   avx_linux:          Linux avx instruction set build
-#   avx2_linux:         Linux avx2 instruction set build
-#   native_arch_linux:  Linux host machine available instruction sets-based build
-#   avx_win:            Windows avx instruction set build
-#   avx2_win:           Windows avx2 instruction set build
+# compiler options:  
+#   cuda_clang                  Use clang for building CUDA code
+#   avx_linux                   Linux avx instruction set build
+#   avx_win                     Windows avx instruction set build
 #
-# Other options for building:
-#   short_logs:         Skip warnings, only log errors when building
-#   verbose_logs:       Display build time compiler warnings
-#   monolithic:         Build all C++ code into a single shared object
-#   dynamic_kernels:    Experimental flag to link kernels dynamically
-#   libc++:             Instead of sdtlibc++, link against libc++
+# Other options for building         
+#   short_logs                  Skip warnings, only log errors when building
+#   verbose_logs                Display build time compiler warnings
+#   monolithic                  Build all C++ code into a single shared object
+#   dynamic_kernels             Experimental flag to link kernels dynamically
+#   dbg                         Debug info build
+#
+# TF versions         
+#   v2          Build v2
+#
+# Feature and 3rd party lib support options         
+#   xla                         Build XLA-enabled TF
+#   tpu                         Build TPU-supported TF
+#   cuda                        Build CUDA-supported TF
+#   cuda_clang                  Build CUDA Clang-supported TF
+#   rocm                        Build AMD GPU-supported TF (rocm)
+#   mkl                         Turn on full mkl support
+#   tensorrt                    Turn on Tensorrt
+#   noaws                       Don't rely on AWS S3 storage
+#   nogcp                       Don't rely on GCP
+#   nohdfs                      No hadoop hdfs for you
+#   nonccl                      No nccl
+#
+# Remote build execution configuration - works only with TF team projects
+#   rbe_base                    For all OSes use general RBE options
+#   rbe_linux                   For all Linux builds, use general RBE options
+#   rbe_win                     For all Windows builds, use general RBE options
+#
+#   rbe_linux_cpu               RBE configuration - build with CPU only
+#   rbe_linux_cuda              RBE configuration - build with GPU support via clang
+#   rbe_linux_cuda_nvcc         RBE configuration - build with GPU support via nvcc
+#
+#   rbe_win_py39:               Configure Windows Python 3.9 RBE
+#
+#   tensorflow_testing_rbe_win: Windows RBE configuration for tensorflow-testing project
+#
+# Embedded Linux configuration (experimental - only tested with TFLite build for now)
+#   elinux:                     For all OSes use General Embedded Linux configuration
+#   elinux_aarch64:             For aarch64 (ARM64) Embedded Linux CPU configuration
+#   elinux_armhf:               For armhf (ARMv7) Embedded Linux CPU configuration 
 
 
 
