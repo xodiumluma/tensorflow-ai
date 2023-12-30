@@ -70,6 +70,19 @@
 #   release_gpu_linux:          Toolchain & CUDA configuration for Linux GPU builds 
 #   release_cpu_macos:          Toolchain & CUDA configuration for MacOS CPU builds 
 #   release_cpu_windows:        Toolchain & CUDA configuration for Windows CPU builds 
+#
+# Build options out of the box - applied first, unconditionally
+#
+# Projects that use TF as part of Bazel build process, having an empty bazelrc will result
+# in a monolithic build. The following sets up modular op registration support by default
+build --define framework_shared_object=true
+build --define tsl_protobuf_header_only=true
+
+build --define=use_fast_cpp_protos=true
+build --define=allow_oversize_protos=true
+
+build --spawn_strategy=standalone
+build -c opt
 
 
 
