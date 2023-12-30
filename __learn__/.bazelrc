@@ -62,7 +62,14 @@
 # Embedded Linux configuration (experimental - only tested with TFLite build for now)
 #   elinux:                     For all OSes use General Embedded Linux configuration
 #   elinux_aarch64:             For aarch64 (ARM64) Embedded Linux CPU configuration
-#   elinux_armhf:               For armhf (ARMv7) Embedded Linux CPU configuration 
+#   elinux_armhf:               For armhf (ARMv7) Embedded Linux CPU configuration
+# 
+# Release build options - all OSes
+#   release_base:               For all builds on all OSes
+#   release_cpu_linux:          Toolchain & CUDA configuration for Linux CPU builds 
+#   release_gpu_linux:          Toolchain & CUDA configuration for Linux GPU builds 
+#   release_cpu_macos:          Toolchain & CUDA configuration for MacOS CPU builds 
+#   release_cpu_windows:        Toolchain & CUDA configuration for Windows CPU builds 
 
 
 
