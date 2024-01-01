@@ -84,5 +84,30 @@ build --define=allow_oversize_protos=true
 build --spawn_strategy=standalone
 build -c opt
 
+# print out configuration options from rc files
+build --announce_rc
+
+# either document this option or remove
+build --define=grpc_no_ares=true
+
+# For info on --incompatible_remove_legacy_whole_archive, please refer to
+# https://github.com/bazelbuild/bazel/issues/7362
+# In Bazel 1.0 and newer it's set to true. There were efforts to get
+# TF to work with the defaults, but there were errors that the test coverage
+# couldn't cover
+# The Bazel devs are working on the transitive shared libs feature
+# Till then this is what we've got - we can re-explore this in the future
+#
+# @TODO - take out these two lines when TF doesn't rely on Bazel packing every
+# library archive via -whole_archive -no_whole_archive
+build --noincompatible_remove_legacy_whole_archive
+build --features=-force_no_whole_archive
+
+# Document or remove
+build --enable_platform_specific_config
+
+# Make XLA support the default
+build --define=with_xla_support=true
+
 
 
