@@ -10,10 +10,6 @@ load(
     "xla_cc_test",
 )
 load(
-    "//xla/stream_executor:build_defs.bzl",
-    "if_gpu_is_configured",
-)
-load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm_is_configured",
 )
@@ -137,7 +133,7 @@ xla_cc_test(
 
 xla_cc_test(
     name = "gemm_rewrite_test",
-    srcs = if_gpu_is_configured(["gemm_rewrite_test.cc"]),
+    srcs = ["gemm_rewrite_test.cc"],
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
         "TENSORFLOW_USE_ROCM=1",
     ]),
@@ -154,6 +150,7 @@ xla_cc_test(
         "//xla/service:pattern_matcher_gmock",
         "//xla/service/gpu:gemm_rewriter",
         "//xla/service/gpu:gpu_executable",
+        "//xla/service/gpu:variant_visitor",
         "//xla/tests:filecheck",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/strings",

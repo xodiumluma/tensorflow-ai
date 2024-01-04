@@ -294,46 +294,6 @@ int SmallestInputDtypeBits(const std::vector<const HloInstruction*>& args) {
   return bits;
 }
 
-// Derives the number of blocks and threads to use for processing a Triton
-// Softmax fusion.
-LaunchDimensions CalculateSoftMaxLaunchDimensions(
-    const HloFusionAdaptor& fusion) {
-  auto reduce = HloFindIf(fusion.GetRoots(), fusion, [](auto node) {
-    return node.opcode() == HloOpcode::kReduce;
-  });
-
-  CHECK(reduce.has_value());
-  const Shape& reduce_input_shape = reduce->GetOperand(0).instruction().shape();
-
-  CHECK_EQ(reduce->instruction().dimensions().size(), 1);
-  CHECK_EQ(reduce->instruction().dimensions()[0],
-           reduce_input_shape.rank() - 1);
-
-  int reduction_dim = reduce_input_shape.dimensions_minor(0);
-
-  unsigned num_rows = 1;
-  for (unsigned minor_axis = 1; minor_axis < reduce_input_shape.rank();
-       ++minor_axis) {
-    num_rows *= reduce_input_shape.dimensions_minor(minor_axis);
-  }
-
-  unsigned num_warps = 32;
-
-  if (reduction_dim <= 512) {
-    num_warps = 1;
-  } else if (reduction_dim <= 1024) {
-    num_warps = 2;
-  } else if (reduction_dim <= 16384) {
-    num_warps = 4;
-  } else if (reduction_dim <= 32768) {
-    num_warps = 8;
-  } else if (reduction_dim <= 65536) {
-    num_warps = 16;
-  }
-
-  return {num_rows, static_cast<uint64_t>(num_warps * WarpSize())};
-}
-
 }  // namespace
 
 HloFusionAnalysis::HloFusionAnalysis(
@@ -485,21 +445,13 @@ StatusOr<LaunchDimensions> HloFusionAnalysis::GetLaunchDimensions() const {
       return CalculateLaunchDimensions(shape, *device_info_, {kUnrollFactor});
     }
     case EmitterFusionKind::kScatter: {
-      const auto& root_shape = fusion_roots().front()->shape();
-      int64_t num_elements = ShapeUtil::ElementsIn(root_shape);
-      int unroll_factor = num_elements % 4 == 0   ? 4
-                          : num_elements % 2 == 0 ? 2
-                                                  : 1;
-      return CalculateLaunchDimensions(root_shape, *device_info_,
-                                       {unroll_factor, /*few_waves=*/false});
+      const auto& updates_shape = fusion_roots().front()->operand(2)->shape();
+      return CalculateLaunchDimensions(updates_shape, *device_info_);
     }
     case EmitterFusionKind::kCustomFusion:
       return absl::UnimplementedError(
           "GetLaunchDimensions is not implemented for custom fusions");
     case EmitterFusionKind::kTriton:
-      if (fusion_backend_config_.kind() == kTritonSoftmaxFusionKind) {
-        return CalculateSoftMaxLaunchDimensions(*fusion_);
-      }
       return absl::UnimplementedError(
           "GetLaunchDimensions is not implemented for Triton fusions");
   }
