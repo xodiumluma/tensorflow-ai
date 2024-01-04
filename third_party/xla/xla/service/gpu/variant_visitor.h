@@ -1,4 +1,4 @@
-/* Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,15 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_PLATFORM_LOGGER_H_
-#define TENSORFLOW_CORE_PLATFORM_LOGGER_H_
+#ifndef XLA_SERVICE_GPU_VARIANT_VISITOR_H_
+#define XLA_SERVICE_GPU_VARIANT_VISITOR_H_
 
-#include "google/protobuf/any.pb.h"
-#include "tensorflow/core/platform/protobuf.h"
-#include "tsl/platform/logger.h"
+namespace xla::gpu {
+// This structure is used to support C++17 overload pattern as described in
+// https://en.cppreference.com/w/cpp/utility/variant/visit
+template <class... Ts>
+struct VariantVisitor : Ts... {
+  using Ts::operator()...;
+};
+template <class... Ts>
+VariantVisitor(Ts...) -> VariantVisitor<Ts...>;
 
-namespace tensorflow {
-using tsl::Logger;  // NOLINT
-}  // namespace tensorflow
+}  // namespace xla::gpu
 
-#endif  // TENSORFLOW_CORE_PLATFORM_LOGGER_H_
+#endif  // XLA_SERVICE_GPU_VARIANT_VISITOR_H_

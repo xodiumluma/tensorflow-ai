@@ -651,24 +651,24 @@ GpuDriver::GraphNodeGetType(hipGraphNode_t node) {
                      "Invalid HIP graph node type");
 }
 
-/* static */ tsl::Status GpuDriver::GraphDebugDotPrint(hipGraph_t graph,
-                                                       const char* path) {
+/* static */ tsl::StatusOr<std::string> GpuDriver::GraphDebugDotPrint(
+    hipGraph_t graph, const char* path, bool return_printed_graph) {
   VLOG(2) << "Print HIP graph " << graph << " debug dot file to " << path;
 
   int flags = hipGraphDebugDotFlagsVerbose;
   RETURN_IF_ROCM_ERROR(wrap::hipGraphDebugDotPrint(graph, path, flags),
                        "Failed to print gpu graph debug file");
 
-  if (VLOG_IS_ON(100)) {
+  if (return_printed_graph) {
     std::string data;
     if (tsl::ReadFileToString(tsl::Env::Default(), path, &data).ok()) {
-      VLOG(200) << "HIP graph " << graph << " debug file:\n" << data;
+      return data;
     } else {
       LOG(WARNING) << "failed to read gpu graph debug file " << path;
     }
   }
 
-  return ::tsl::OkStatus();
+  return std::string(path);
 }
 
 /* static */ tsl::Status GpuDriver::DeviceGraphMemTrim(GpuDeviceHandle device) {
@@ -1906,14 +1906,11 @@ static tsl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
   return tsl::OkStatus();
 }
 
-/* static */ bool GpuDriver::GetDriverVersion(int* driver_version) {
-  hipError_t res = wrap::hipDriverGetVersion(driver_version);
-  if (res != hipSuccess) {
-    LOG(ERROR) << "failed to query driver version: " << ToString(res);
-    return false;
-  }
-
-  return true;
+/* static */ tsl::StatusOr<int32_t> GpuDriver::GetDriverVersion() {
+  int32_t version;
+  RETURN_IF_ROCM_ERROR(wrap::hipDriverGetVersion(&version),
+                       "Could not get driver version");
+  return version;
 }
 
 /* static */ bool GpuDriver::GetDeviceProperties(

@@ -20,6 +20,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -64,6 +65,7 @@ class HloFusionAnalysis {
   // Determines the fusion type for the emitter.
   EmitterFusionKind GetEmitterFusionKind() const;
 
+  ABSL_DEPRECATED("Use GetFusionEmitter().launch_dimensions() instead")
   // Determines the launch dimensions for the fusion. The fusion kind must not
   // be `kTriton`.
   StatusOr<LaunchDimensions> GetLaunchDimensions() const;
@@ -90,6 +92,12 @@ class HloFusionAnalysis {
 
   // Returns the hero reduction of the computation.
   const HloInstruction* FindHeroReduction() const;
+
+  const se::DeviceDescription& device_info() const { return *device_info_; }
+
+  const FusionBackendConfig& fusion_backend_config() const {
+    return fusion_backend_config_;
+  }
 
  private:
   // Precomputed information about inputs (arguments) and outputs (roots) of the
@@ -144,6 +152,7 @@ class HloFusionAnalysis {
 std::optional<HloFusionAnalysis> AnalyzeProducerConsumerFusion(
     const HloInstruction& producer, const HloInstruction& consumer,
     const se::DeviceDescription& device_info);
+
 // Creates a HloFusionAnalysis that analyzes just consumer as a standalone
 // fusion.
 std::optional<HloFusionAnalysis> AnalyzeFusion(
