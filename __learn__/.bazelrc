@@ -19,41 +19,41 @@
 #   darwin_arm64:
 #
 # compiler options:  
-#   cuda_clang                  Use clang for building CUDA code
-#   avx_linux                   Linux avx instruction set build
-#   avx_win                     Windows avx instruction set build
+#   cuda_clang:                 Use clang for building CUDA code
+#   avx_linux:                  Linux avx instruction set build
+#   avx_win:                    Windows avx instruction set build
 #
 # Other options for building         
-#   short_logs                  Skip warnings, only log errors when building
-#   verbose_logs                Display build time compiler warnings
-#   monolithic                  Build all C++ code into a single shared object
-#   dynamic_kernels             Experimental flag to link kernels dynamically
-#   dbg                         Debug info build
+#   short_logs:                 Skip warnings, only log errors when building
+#   verbose_logs:               Display build time compiler warnings
+#   monolithic:                 Build all C++ code into a single shared object
+#   dynamic_kernels:            Experimental flag to link kernels dynamically
+#   dbg:                        Debug info build
 #
 # TF versions         
 #   v2          Build v2
 #
 # Feature and 3rd party lib support options         
-#   xla                         Build XLA-enabled TF
-#   tpu                         Build TPU-supported TF
-#   cuda                        Build CUDA-supported TF
-#   cuda_clang                  Build CUDA Clang-supported TF
-#   rocm                        Build AMD GPU-supported TF (rocm)
-#   mkl                         Turn on full mkl support
-#   tensorrt                    Turn on Tensorrt
-#   noaws                       Don't rely on AWS S3 storage
-#   nogcp                       Don't rely on GCP
-#   nohdfs                      No hadoop hdfs for you
-#   nonccl                      No nccl
+#   xla:                        Build XLA-enabled TF
+#   tpu:                        Build TPU-supported TF
+#   cuda:                       Build CUDA-supported TF
+#   cuda_clang:                 Build CUDA Clang-supported TF
+#   rocm:                       Build AMD GPU-supported TF (rocm)
+#   mkl:                        Turn on full mkl support
+#   tensorrt:                   Turn on Tensorrt
+#   noaws:                      Don't rely on AWS S3 storage
+#   nogcp:                      Don't rely on GCP
+#   nohdfs:                     No hadoop hdfs for you
+#   nonccl:                     No nccl
 #
 # Remote build execution configuration - works only with TF team projects
-#   rbe_base                    For all OSes use general RBE options
-#   rbe_linux                   For all Linux builds, use general RBE options
-#   rbe_win                     For all Windows builds, use general RBE options
+#   rbe_base:                   For all OSes use general RBE options
+#   rbe_linux:                  For all Linux builds, use general RBE options
+#   rbe_win:                    For all Windows builds, use general RBE options
 #
-#   rbe_linux_cpu               RBE configuration - build with CPU only
-#   rbe_linux_cuda              RBE configuration - build with GPU support via clang
-#   rbe_linux_cuda_nvcc         RBE configuration - build with GPU support via nvcc
+#   rbe_linux_cpu:              RBE configuration - build with CPU only
+#   rbe_linux_cuda:             RBE configuration - build with GPU support via clang
+#   rbe_linux_cuda_nvcc:        RBE configuration - build with GPU support via nvcc
 #
 #   rbe_win_py39:               Configure Windows Python 3.9 RBE
 #
@@ -108,6 +108,20 @@ build --enable_platform_specific_config
 
 # Make XLA support the default
 build --define=with_xla_support=true
+
+# Document or remove
+build --config=short_logs
+
+# Document or remove
+build --config=v2
+
+# Turn off AWS/HDFS support
+build --define=no_aws_support=true
+build --define=no_hdfs_support=true
+
+# we need the experimental flag as TF has now `cc_shared_library` targets
+# Delete it when `cc_shared_library` is turned on by default
+build --experimental_cc_shared_library
 
 
 
