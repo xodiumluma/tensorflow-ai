@@ -55,6 +55,7 @@ limitations under the License.
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Linker/Linker.h"
+#include "mlir/AsmParser/AsmParser.h"  // from @llvm-project
 #include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
@@ -371,6 +372,9 @@ Status IrEmitterUnnested::EmitConditional(
     mlir::Operation* op,
     const absl::flat_hash_map<const mlir::Operation*, const HloInstruction*>&
         hlo_for_lmhlo) {
+  if (ir_emitter_context_->emit_ir_from_hlo())
+    return EmitConditional(hlo_for_lmhlo.at(op));
+
   auto conditional = mlir::cast<mlir::lmhlo::CaseOp>(op);
 
   std::vector<ThunkSequence> branch_thunks;
@@ -392,6 +396,43 @@ Status IrEmitterUnnested::EmitConditional(
   TF_ASSIGN_OR_RETURN(auto slice, GetAllocationSlice(conditional.getIndex()));
   AddThunkToThunkSequence(std::unique_ptr<Thunk>(new ConditionalThunk(
       Thunk::ThunkInfo::WithProfileAnnotation(op), std::move(config), slice)));
+  return OkStatus();
+}
+
+static ConditionalThunkConfig GetConditionalThunkConfig(
+    const HloInstruction* instr,
+    std::vector<ThunkSequence> branch_thunk_sequences) {
+  ConditionalThunkConfig config;
+  config.branch_index_is_bool =
+      instr->operand(0)->shape().element_type() == PRED;
+  config.branch_count = instr->branch_count();
+  config.branch_thunks.reserve(config.branch_count);
+  for (auto& branch_thunk_sequence : branch_thunk_sequences) {
+    config.branch_thunks.emplace_back(
+        new SequentialThunk(Thunk::ThunkInfo::WithProfileAnnotation(instr),
+                            std::move(branch_thunk_sequence)));
+  }
+  return config;
+}
+
+Status IrEmitterUnnested::EmitConditional(const HloInstruction* instr) {
+  std::vector<ThunkSequence> branch_thunks;
+  branch_thunks.reserve(instr->branch_count());
+
+  for (auto comp : instr->branch_computations()) {
+    auto ir_emitter = IrEmitterUnnested::Create(ir_emitter_context_);
+    TF_RETURN_IF_ERROR(ir_emitter->EmitHloComputation(comp));
+    branch_thunks.push_back(std::move(*ir_emitter->ConsumeThunkSequence()));
+  }
+
+  ConditionalThunkConfig config =
+      GetConditionalThunkConfig(instr, std::move(branch_thunks));
+
+  TF_ASSIGN_OR_RETURN(auto slice,
+                      GetAllocationSliceForHlo(instr->operand(0), {}));
+  AddThunkToThunkSequence(std::unique_ptr<Thunk>(
+      new ConditionalThunk(Thunk::ThunkInfo::WithProfileAnnotation(instr),
+                           std::move(config), slice)));
   return OkStatus();
 }
 
@@ -1626,6 +1667,8 @@ static StatusOr<CustomCallThunk::AttributesMap> BuildAttributesMap(
 
 Status IrEmitterUnnested::EmitCustomCallThunk(
     mlir::Operation* op, const HloCustomCallInstruction* instr) {
+  if (ir_emitter_context_->emit_ir_from_hlo())
+    return EmitCustomCallThunk(instr);
   auto custom_call = mlir::cast<mlir::lmhlo::CustomCallOp>(op);
   const std::string call_target_name = custom_call.getCallTargetName().str();
 
@@ -1799,6 +1842,172 @@ Status IrEmitterUnnested::EmitCustomCallThunk(
   return OkStatus();
 }
 
+Status IrEmitterUnnested::EmitCustomCallThunk(
+    const HloCustomCallInstruction* instr) {
+  const std::string call_target_name = instr->custom_call_target();
+
+  // Typed FFI custom calls is a replacement for legacy custom calls with
+  // a rich type safe API. It's under construction and not fully supported.
+  bool is_ffi_custom_call =
+      instr->api_version() == CustomCallApiVersion::API_VERSION_TYPED_FFI;
+
+  void* call_target = CustomCallTargetRegistry::Global()->Lookup(
+      call_target_name, std::string(platform_name()));
+
+  StatusOr<XLA_FFI_Handler*> handler =
+      ffi::FindHandler(call_target_name, platform_name());
+
+  // At least one implementation should be available at run time.
+  bool found_custom_call = !is_ffi_custom_call && call_target != nullptr;
+  bool found_ffi_handler = is_ffi_custom_call && handler.ok();
+
+  if (!found_custom_call && !found_ffi_handler) {
+    auto& debug_options = ir_emitter_context_->debug_options();
+
+    // If true, then all custom calls that are not found in custom call or FFI
+    // registries will become no-op (we don't emit any thunks for them).
+    if (debug_options.xla_gpu_mock_custom_calls()) {
+      return OkStatus();
+    }
+
+    // TODO(ezhulenev): Custom calls registered with an XLA runtime are not part
+    // of a legacy registry, or an FFI registry. For now we simply ignore them.
+    if (debug_options.xla_gpu_enable_xla_runtime_executable()) {
+      return OkStatus();
+    }
+
+    return absl::UnimplementedError(
+        absl::StrCat("No registered implementation for custom call to ",
+                     call_target_name, " for platform ", platform_name()));
+  }
+
+  using Slices = std::vector<std::optional<CustomCallThunk::Slice>>;
+
+  Slices operands;
+  for (auto* operand : instr->operands()) {
+    TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
+        operand->shape(), [&](const Shape& subshape, const ShapeIndex& index) {
+          if (subshape.IsToken()) {
+            operands.push_back(std::nullopt);
+            return OkStatus();
+          }
+          if (!subshape.IsArray()) {
+            return OkStatus();
+          }
+          TF_ASSIGN_OR_RETURN(auto slice,
+                              GetAllocationSliceForHlo(operand, index));
+          operands.push_back(CustomCallThunk::Slice{slice, subshape});
+          return OkStatus();
+        }));
+  }
+
+  Slices results;
+  TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
+      instr->shape(), [&](const Shape& subshape, const ShapeIndex& index) {
+        if (subshape.IsToken()) {
+          results.push_back(std::nullopt);
+          return OkStatus();
+        }
+        if (!subshape.IsArray()) {
+          return OkStatus();
+        }
+        TF_ASSIGN_OR_RETURN(auto slice, GetAllocationSliceForHlo(instr, index));
+        results.push_back(CustomCallThunk::Slice{slice, subshape});
+        return OkStatus();
+      }));
+
+  // For legacy custom calls we convert all API versions into the latest
+  // status-returning one and pass backend config as an opaque string.
+  CustomCallThunk::CustomCallTarget custom_call_target;
+  std::string opaque;
+
+  // For XLA FFI handlers we decode opaque backend config into attributes map
+  // at IR emission time, so that we do not need to parse MLIR at run time. For
+  // FFI handlers backend config must be a compatible MLIR dictionary.
+  CustomCallThunk::AttributesMap attributes;
+
+  // For information about this calling convention, see
+  // xla/g3doc/custom_call.md.
+  switch (instr->api_version()) {
+    case CustomCallApiVersion::API_VERSION_ORIGINAL:
+      using original_call_type =
+          void (*)(CustomCallThunk::Stream /*stream*/, void** /*buffers*/,
+                   const char* /*opaque*/, size_t /*opaque_len*/);
+      custom_call_target = [call_target](CustomCallThunk::Stream stream,
+                                         void** buffers, const char* opaque,
+                                         size_t opaque_len,
+                                         XlaCustomCallStatus*) {
+        auto typed_call_target =
+            reinterpret_cast<original_call_type>(call_target);
+        typed_call_target(stream, buffers, opaque, opaque_len);
+      };
+      break;
+    case CustomCallApiVersion::API_VERSION_STATUS_RETURNING:
+    case CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED:
+      using status_returning_call_type =
+          void (*)(CustomCallThunk::Stream /*stream*/, void** /*buffers*/,
+                   const char* /*opaque*/, size_t /*opaque_len*/,
+                   XlaCustomCallStatus* /*status*/);
+      custom_call_target =
+          reinterpret_cast<status_returning_call_type>(call_target);
+      break;
+    case CustomCallApiVersion::API_VERSION_TYPED_FFI:
+      // We already checked `handler` above.
+      break;
+    default:
+      return InternalError("Unknown custom-call API version enum value: %d",
+                           instr->api_version());
+  }
+
+  auto& backend_config_str = instr->raw_backend_config_string();
+  switch (instr->api_version()) {
+    case CustomCallApiVersion::API_VERSION_ORIGINAL:
+    case CustomCallApiVersion::API_VERSION_STATUS_RETURNING:
+    case CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED:
+      if (!backend_config_str.empty()) {
+        opaque = backend_config_str;
+      }
+      break;
+
+    case CustomCallApiVersion::API_VERSION_TYPED_FFI:
+      if (!backend_config_str.empty()) {
+        mlir::Attribute attr = mlir::parseAttribute(
+            backend_config_str, ir_emitter_context_->mlir_context());
+        if (auto dict = attr.dyn_cast_or_null<mlir::DictionaryAttr>()) {
+          TF_ASSIGN_OR_RETURN(attributes, BuildAttributesMap(dict));
+          break;
+        }
+        return absl::InternalError(
+            "Unsupported backend config. Expected a string parsable into "
+            "dictionary attribute");
+      }
+      break;
+
+    default:
+      return InternalError("Unknown custom-call API version enum value: %d",
+                           instr->api_version());
+  }
+
+  auto ffi_thunk = [&] {
+    auto& called_computations = instr->called_computations();
+    return std::make_unique<CustomCallThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr), *handler,
+        std::move(operands), std::move(results), std::move(attributes),
+        called_computations.empty() ? nullptr : called_computations[0]);
+  };
+
+  auto legacy_thunk = [&] {
+    return std::make_unique<CustomCallThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr),
+        std::move(custom_call_target), std::move(operands), std::move(results),
+        std::move(opaque));
+  };
+
+  AddThunkToThunkSequence(found_ffi_handler ? ffi_thunk() : legacy_thunk());
+
+  return OkStatus();
+}
+
 Status IrEmitterUnnested::EmitFftThunk(mlir::Operation* op) {
   auto fft_op = mlir::cast<mlir::lmhlo::FftOp>(op);
   const Shape operand_shape = GetShape(fft_op.getOperand());
@@ -1917,6 +2126,84 @@ Status IrEmitterUnnested::EmitTriangularSolveCustomCall(mlir::Operation* op) {
   }
   return OkStatus();
 }
+
+Status IrEmitterUnnested::EmitTriangularSolveCustomCall(
+    const HloInstruction* instr) {
+  TF_RET_CHECK(instr->operand_count() == 2);
+  auto operands = instr->operands();
+  TF_RET_CHECK(instr->shape().IsTuple() &&
+               instr->shape().tuple_shapes_size() == 2);
+
+  // We expect Fortran layout for everything other than the temp buffer (the
+  // last operand).  Fortran layout is not XLA default layout with elements 0
+  // and 1 swapped.  For example instead of default layout {3,2,1,0} we'd have
+  // Fortran layout {2,3,1,0}.
+  auto has_fortran_layout = [](const Layout& layout) {
+    int n = layout.minor_to_major_size();
+    return layout.minor_to_major(0) == n - 2 &&
+           layout.minor_to_major(1) == n - 1;
+  };
+  TF_RET_CHECK(has_fortran_layout(operands[0]->shape().layout()));
+  TF_RET_CHECK(has_fortran_layout(operands[1]->shape().layout()));
+  TF_RET_CHECK(has_fortran_layout(instr->shape().tuple_shapes(0).layout()));
+
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice a_slice,
+                      GetAllocationSliceForHlo(operands[0]));
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice b_slice,
+                      GetAllocationSliceForHlo(operands[1]));
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice result_slice,
+                      GetAllocationSliceForHlo(instr, {0}));
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice temp_slice,
+                      GetAllocationSliceForHlo(instr, {1}));
+
+  const Shape b_shape = operands[1]->shape();
+  const PrimitiveType elem_ty = b_shape.element_type();
+
+  TriangularSolveOptions backend_config;
+  auto& backend_config_str = instr->raw_backend_config_string();
+  if (!backend_config_str.empty()) {
+    TF_RETURN_IF_ERROR(
+        tsl::HumanReadableJsonToProto(backend_config_str, &backend_config));
+  }
+
+  ThunkSequence thunks;
+
+  // Triangular solve is in-place on 'b', so copy 'b' to the output if they
+  // aren't the same buffer.
+  if (b_slice != result_slice) {
+    thunks.push_back(std::make_unique<DeviceToDeviceCopyThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr),
+        /*source_buffer=*/b_slice,
+        /*destination_buffer=*/result_slice,
+        /*mem_size=*/ShapeUtil::ByteSizeOf(b_shape),
+        /*source_value=*/nullptr,
+        /*destination_value=*/nullptr));
+  }
+
+  int64_t m = b_shape.dimensions(b_shape.rank() - 2);
+  int64_t n = b_shape.dimensions(b_shape.rank() - 1);
+  int64_t batch_size = std::accumulate(
+      b_shape.dimensions().begin(), b_shape.dimensions().end() - 2, int64_t{1},
+      [](int64_t a, int64_t b) { return a * b; });
+  int64_t elem_size = ShapeUtil::ByteSizeOfPrimitiveType(elem_ty);
+  int64_t a_batch_stride =
+      backend_config.left_side() ? m * m * elem_size : n * n * elem_size;
+  int64_t b_batch_stride = m * n * elem_size;
+  thunks.push_back(std::make_unique<TriangularSolveThunk>(
+      Thunk::ThunkInfo::WithProfileAnnotation(instr), backend_config,
+      PtxOptsFromDebugOptions(ir_emitter_context_->debug_options()),
+      /*a_buffer=*/a_slice, /*b_buffer=*/result_slice, temp_slice, elem_ty,
+      batch_size, m, n, a_batch_stride, b_batch_stride));
+
+  // Elide the sequential thunk if there's no copy.
+  if (thunks.size() == 1) {
+    AddThunkToThunkSequence(std::move(thunks[0]));
+  } else {
+    AddThunkToThunkSequence(std::make_unique<SequentialThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr), std::move(thunks)));
+  }
+  return OkStatus();
+}
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 Status IrEmitterUnnested::EmitTopKCustomCall(
@@ -2030,8 +2317,8 @@ Status IrEmitterUnnested::EmitFusion(const HloFusionInstruction* instr,
       std::unique_ptr<FusionInterface> emitter,
       GetFusionEmitter(HloFusionInfo(
           fusion_analysis, instr, &ir_emitter_context_->buffer_assignment())));
-  return AddThunksToThunkSequence(emitter->Emit(*ir_emitter_context_, nullptr,
-                                                *instr, kernel_reuse_cache_));
+  return AddThunksToThunkSequence(
+      emitter->Emit(*ir_emitter_context_, nullptr, *instr));
 }
 
 Status IrEmitterUnnested::EmitFusion(
@@ -2051,8 +2338,8 @@ Status IrEmitterUnnested::EmitFusion(
       std::unique_ptr<FusionInterface> emitter,
       GetFusionEmitter(LmhloFusionInfo(fusion_analysis, fusion_op,
                                        ir_emitter_context_->allocations())));
-  return AddThunksToThunkSequence(emitter->Emit(*ir_emitter_context_, fusion_op,
-                                                *fusion, kernel_reuse_cache_));
+  return AddThunksToThunkSequence(
+      emitter->Emit(*ir_emitter_context_, fusion_op, *fusion));
 }
 
 Status IrEmitterUnnested::AssertNonDeterminismIsOkay(
@@ -3542,6 +3829,72 @@ Status IrEmitterUnnested::EmitLmhloRegion(
 Status IrEmitterUnnested::EmitHloInstruction(const HloInstruction* instr) {
   // TODO(anlunx): Support other instruction opcodes.
   switch (instr->opcode()) {
+    case HloOpcode::kAllGatherDone:
+      return EmitNcclAsyncDone(Thunk::kNcclAllGatherDone, instr);
+    case HloOpcode::kAllGatherStart: {
+      auto* all_gather = Cast<HloAllGatherInstruction>(instr);
+      return EmitNcclThunk<NcclAllGatherStartThunk, HloAllGatherInstruction>(
+          Thunk::kNcclAllGatherStart, all_gather, all_gather,
+          all_gather->use_global_device_ids());
+    }
+
+    case HloOpcode::kAllReduceDone:
+      return EmitNcclAsyncDone(Thunk::kNcclAllReduceDone, instr);
+    case HloOpcode::kAllReduceStart: {
+      auto* all_reduce = Cast<HloAllReduceInstruction>(instr);
+      return EmitNcclThunk<NcclAllReduceStartThunk, HloAllReduceInstruction>(
+          Thunk::kNcclAllReduceStart, all_reduce, all_reduce,
+          all_reduce->use_global_device_ids());
+    }
+
+    case HloOpcode::kAsyncDone: {
+      const HloInstruction* wrapped = instr->async_wrapped_instruction();
+      switch (wrapped->opcode()) {
+        case HloOpcode::kReduceScatter:
+          return EmitNcclAsyncDone(Thunk::kNcclReduceScatterDone, instr);
+        default:
+          return InternalError("Unsupported async done wrapped instruction: %s",
+                               HloOpcodeString(wrapped->opcode()));
+      }
+    }
+    case HloOpcode::kAsyncStart: {
+      const HloInstruction* wrapped = instr->async_wrapped_instruction();
+      switch (wrapped->opcode()) {
+        case HloOpcode::kReduceScatter: {
+          auto* reduce_scatter = Cast<HloReduceScatterInstruction>(wrapped);
+          return EmitNcclThunk<NcclReduceScatterStartThunk,
+                               HloReduceScatterInstruction>(
+              Thunk::kNcclReduceScatter, instr, reduce_scatter,
+              reduce_scatter->use_global_device_ids());
+        }
+        default:
+          return InternalError(
+              "Unsupported async start wrapped instruction: %s",
+              HloOpcodeString(wrapped->opcode()));
+      }
+    }
+
+    case HloOpcode::kCall:
+      return EmitCommandBufferThunk(instr);
+    case HloOpcode::kConditional:
+      return EmitConditional(instr);
+    case HloOpcode::kConstant:
+      return EmitConstant(Cast<HloConstantInstruction>(instr));
+    case HloOpcode::kCustomCall: {
+      auto* custom_call = Cast<HloCustomCallInstruction>(instr);
+      if (IsLegacyCublasMatmul(*instr)) {
+        return EmitGemmThunk(custom_call);
+      }
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+      if (IsCustomCallToCusolver(*instr)) {
+        return EmitCholeskyThunk(instr);
+      }
+      if (IsTriangularSolve(*instr)) {
+        return EmitTriangularSolveCustomCall(instr);
+      }
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+      return EmitCustomCallThunk(custom_call);
+    }
     case HloOpcode::kFusion: {
       auto* fusion = Cast<HloFusionInstruction>(instr);
       TF_ASSIGN_OR_RETURN(auto backend_config,
@@ -3552,46 +3905,26 @@ Status IrEmitterUnnested::EmitHloInstruction(const HloInstruction* instr) {
                           HloFusionAnalysis::Create(fusion, &device_info));
       return EmitFusion(fusion, fusion_analysis);
     }
-    case HloOpcode::kWhile:
-      return EmitWhile(instr);
-    case HloOpcode::kSort:
-      return EmitSort(Cast<HloSortInstruction>(instr));
-    case HloOpcode::kConstant:
-      return EmitConstant(Cast<HloConstantInstruction>(instr));
-    case HloOpcode::kCustomCall: {
-      auto* custom_call = Cast<HloCustomCallInstruction>(instr);
-      if (IsLegacyCublasMatmul(*instr)) {
-        return EmitGemmThunk(custom_call);
-      }
-      return InternalError("Unsupported custom call instruction: %s",
-                           custom_call->name());
-    }
+    case HloOpcode::kInfeed:
+      return EmitInfeed(Cast<HloInfeedInstruction>(instr));
+    case HloOpcode::kOutfeed:
+      return EmitOutfeed(Cast<HloOutfeedInstruction>(instr));
     case HloOpcode::kRngGetAndUpdateState:
       return EmitRngGetAndUpdateState(
           Cast<HloRngGetAndUpdateStateInstruction>(instr));
-    case HloOpcode::kInfeed:
-      return EmitInfeed(Cast<HloInfeedInstruction>(instr));
-    case HloOpcode::kAllReduceStart: {
-      auto* all_reduce = Cast<HloAllReduceInstruction>(instr);
-      return EmitNcclThunk<NcclAllReduceStartThunk, HloAllReduceInstruction>(
-          Thunk::kNcclAllReduceStart, all_reduce, all_reduce,
-          all_reduce->use_global_device_ids());
-    }
-    case HloOpcode::kAllReduceDone:
-      return EmitNcclAsyncDone(Thunk::kNcclAllReduceDone, instr);
-    case HloOpcode::kOutfeed:
-      return EmitOutfeed(Cast<HloOutfeedInstruction>(instr));
-    case HloOpcode::kCall:
-      return EmitCommandBufferThunk(instr);
+    case HloOpcode::kSort:
+      return EmitSort(Cast<HloSortInstruction>(instr));
+    case HloOpcode::kWhile:
+      return EmitWhile(instr);
+
+    // HLO module is already ordered, so kAfterAll is a noop.
+    case HloOpcode::kAfterAll:
     // We don't need to emit thunks for these operations because their semantics
     // are encoded by buffers.
     case HloOpcode::kBitcast:
     case HloOpcode::kGetTupleElement:
     case HloOpcode::kParameter:
     case HloOpcode::kTuple:
-      return OkStatus();
-    // HLO module is already ordered, so kAfterAll is a noop.
-    case HloOpcode::kAfterAll:
       return OkStatus();
     default:
       return InternalError("Unsupported instruction opcode: %s",

@@ -268,9 +268,9 @@ xla_cc_test(
 )
 
 cc_library(
-    name = "tile_analysis",
-    srcs = ["tile_analysis.cc"],
-    hdrs = ["tile_analysis.h"],
+    name = "indexing_analysis",
+    srcs = ["indexing_analysis.cc"],
+    hdrs = ["indexing_analysis.h"],
     visibility = ["//visibility:public"],
     deps = [
         ":indexing_map_simplifier",
@@ -298,10 +298,10 @@ cc_library(
 )
 
 xla_cc_test(
-    name = "tile_analysis_test",
-    srcs = ["tile_analysis_test.cc"],
+    name = "indexing_analysis_test",
+    srcs = ["indexing_analysis_test.cc"],
     deps = [
-        ":tile_analysis",
+        ":indexing_analysis",
         "//xla:status_macros",
         "//xla:statusor",
         "//xla:test_helpers",
@@ -319,12 +319,49 @@ xla_cc_test(
 )
 
 cc_library(
+    name = "tile_analysis",
+    srcs = ["tile_analysis.cc"],
+    hdrs = ["tile_analysis.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":indexing_analysis",
+        ":indexing_map_simplifier",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+xla_cc_test(
+    name = "tile_analysis_test",
+    srcs = ["tile_analysis_test.cc"],
+    deps = [
+        ":tile_analysis",
+        "//xla:status_macros",
+        "//xla:statusor",
+        "//xla/hlo/ir:hlo",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest",
+        "@llvm-project//mlir:IR",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
+    ],
+)
+
+cc_library(
     name = "coalescing_analysis",
     srcs = ["coalescing_analysis.cc"],
     hdrs = ["coalescing_analysis.h"],
     visibility = ["//visibility:public"],
     deps = [
-        ":tile_analysis",
+        ":indexing_analysis",
         "//xla:permutation_util",
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
@@ -342,7 +379,7 @@ xla_cc_test(
     srcs = ["coalescing_analysis_test.cc"],
     deps = [
         ":coalescing_analysis",
-        ":tile_analysis",
+        ":indexing_analysis",
         "//xla/hlo/ir:hlo",
         "//xla/tests:hlo_test_base",
         "@com_google_absl//absl/log:check",
@@ -398,40 +435,48 @@ cc_library(
     ],
 )
 
-xla_cc_test(
-    name = "hlo_op_profiler_run",
-    timeout = "eternal",
-    srcs = ["hlo_op_profiler_run.cc"],
-    # Disable backend optimizations (in particular reassociate and instcombine) which would optimize
-    # expressions like integer add and multiply.
-    args = ["--xla_backend_optimization_level=0"],
-    # This is a development tool, not a normal test, and thus should only be run
-    # manually with --config=cuda.
-    tags = [
-        "gpu",
-        "manual",
-        "notap",
-        "requires-gpu-nvidia",
-    ],
-    deps = [
-        ":hlo_op_profile_proto_cc",
-        ":hlo_op_profiler_lib",
-        "//xla:debug_options_flags",
-        "//xla:xla_data_proto_cc",
-        "//xla/hlo/ir:hlo",
-        "//xla/service:hlo_runner",
-        "//xla/service:platform_util",
-        "//xla/stream_executor:device_description",
-        "@com_google_absl//absl/log",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@local_tsl//tsl/platform:env",
-        "@local_tsl//tsl/platform:path",
-        "@local_tsl//tsl/platform:platform_port",
-        "@local_tsl//tsl/platform:status",
-        "@local_tsl//tsl/util:command_line_flags",
-    ],
-)
+[
+    xla_cc_test(
+        name = "hlo_op_profiler_run_" + sm,
+        timeout = "eternal",
+        srcs = ["hlo_op_profiler_run.cc"],
+        # Disable backend optimizations (in particular reassociate and instcombine) which would optimize
+        # expressions like integer add and multiply.
+        args = ["--xla_backend_optimization_level=0"],
+        # This is a development tool, not a normal test, and thus should only be run
+        # manually with --config=cuda.
+        tags = [
+            "gpu",
+            "manual",
+            "notap",
+            "requires-gpu-" + sm + "-only",
+        ],
+        deps = [
+            ":hlo_op_profile_proto_cc",
+            ":hlo_op_profiler_lib",
+            "//xla:debug_options_flags",
+            "//xla:xla_data_proto_cc",
+            "//xla/hlo/ir:hlo",
+            "//xla/service:hlo_runner",
+            "//xla/service:platform_util",
+            "//xla/stream_executor:device_description",
+            "@com_google_absl//absl/log",
+            "@com_google_absl//absl/strings",
+            "@com_google_absl//absl/strings:str_format",
+            "@local_tsl//tsl/platform:env",
+            "@local_tsl//tsl/platform:path",
+            "@local_tsl//tsl/platform:platform_port",
+            "@local_tsl//tsl/platform:status",
+            "@local_tsl//tsl/util:command_line_flags",
+        ],
+    )
+    for sm in [
+        "sm60",
+        "sm70",
+        "sm80",
+        "sm90",
+    ]
+]
 
 xla_cc_test(
     name = "hlo_op_profiler_test",
