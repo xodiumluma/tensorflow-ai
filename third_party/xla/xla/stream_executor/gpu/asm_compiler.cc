@@ -188,33 +188,43 @@ std::string FindCudaExecutable(const std::string& binary_name,
     return it->second;
   }
 
-  // Try searching in the default PATH first if applicable.
-  if (tsl::PreferPtxasFromPath() &&
-      GetToolVersionString(binary_filename).ok()) {
+  auto env = tsl::Env::Default();
+  std::string binary_path =
+      tsl::io::JoinPath(preferred_cuda_dir, "bin", binary_filename);
+
+  // Search in the preferred cuda directory
+  VLOG(2) << "Looking for " << binary_filename << " at " << binary_path;
+  if (env->FileExists(binary_path).ok() &&
+      GetToolVersionString(binary_path).ok()) {
+    VLOG(2) << "Using " << binary_filename << " at " << binary_path;
+    seen_binary_paths->emplace(std::move(cache_key), binary_path);
+    return binary_path;
+  }
+
+  // Try searching in PATH if the preferred cuda directory didn't work.
+  if (GetToolVersionString(binary_filename).ok()) {
     VLOG(2) << "Using " << binary_filename;
     seen_binary_paths->emplace(std::move(cache_key), binary_filename);
     return binary_filename;
   }
 
   // Search in cuda root candidates.
-  auto env = tsl::Env::Default();
-  std::string binary_path;
-  for (const std::string& cuda_root :
-       tsl::CandidateCudaRoots(preferred_cuda_dir)) {
+  for (const std::string& cuda_root : tsl::CandidateCudaRoots()) {
     binary_path = tsl::io::JoinPath(cuda_root, "bin", binary_filename);
     VLOG(2) << "Looking for " << binary_filename << " at " << binary_path;
     if (env->FileExists(binary_path).ok() &&
         GetToolVersionString(binary_path).ok()) {
-      break;
+      VLOG(2) << "Using " << binary_filename << " at " << binary_path;
+      seen_binary_paths->emplace(std::move(cache_key), binary_path);
+      return binary_path;
     }
   }
-  if (!env->FileExists(binary_path).ok()) {
-    // Give up and just rely on subprocess invocation to find the correct
-    // binary. This won't work, in all probability, given we already tried that
-    // above, but it's the best we can do.
-    VLOG(2) << "Unable to find " << binary_name;
-    binary_path = binary_filename;
-  }
+
+  // Give up and just rely on subprocess invocation to find the correct
+  // binary. This won't work, in all probability, given we already tried that
+  // above, but it's the best we can do.
+  VLOG(2) << "Unable to find " << binary_name;
+  binary_path = binary_filename;
   VLOG(2) << "Using " << binary_filename << " at " << binary_path;
   seen_binary_paths->emplace(std::move(cache_key), binary_path);
   return binary_path;
@@ -459,6 +469,89 @@ static std::string findRocmExecutable(const std::string& binary_relative_path,
     binary_path = absl::StrCat("<", binary_path, " - NOT FOUND>");
   }
   return binary_path;
+}
+
+tsl::StatusOr<std::vector<uint8_t>> BundleGpuAsm(
+    std::vector<HsacoImage> images, const std::string rocm_root_dir) {
+  std::string clang_offload_bundler_path =
+      findRocmExecutable("llvm/bin/clang-offload-bundler", rocm_root_dir);
+
+  // Initialise the "--inputs" / "--targets" arguments for the
+  // clang-offload-bundler with a dummy file / host target triple...
+  // clang-offload-bundler requires 1 and only 1 host target triple
+  std::ostringstream inputs_list;
+  std::ostringstream targets_list;
+
+  inputs_list << "/dev/null";
+  targets_list << "host-x86_64-unknown-linux";
+
+  // Write images to temporary files.
+  std::vector<std::string> image_paths;
+  auto env = tsl::Env::Default();
+  for (const HsacoImage& img : images) {
+    std::string img_path;
+    if (!env->LocalTempFilename(&img_path)) {
+      return tsl::errors::Internal(
+          "Could not get temporary filenames for images.");
+    }
+    TF_RETURN_IF_ERROR(tsl::WriteStringToFile(
+        env, img_path, std::string(img.bytes.begin(), img.bytes.end())));
+    VLOG(2) << "image written to " << img_path;
+    inputs_list << "," << img_path;
+    targets_list << ",hip-amdgcn-amd-amdhsa-" << img.gfx_arch;
+    image_paths.push_back(std::move(img_path));
+  }
+  absl::Cleanup image_files_cleaner = [&image_paths] {
+    for (const auto& path : image_paths) {
+      TF_CHECK_OK(tsl::Env::Default()->DeleteFile(path));
+    }
+  };
+
+  // Prepare temorary result file.
+  std::string result_path;
+  if (!env->LocalTempFilename(&result_path)) {
+    return tsl::errors::Internal(
+        "Could not get temporary filename for fatbin result.");
+  }
+  absl::Cleanup result_file_cleaner = [&result_path] {
+    // This file may never be created, so the failure to delete it should not
+    // propagate to TF.
+    tsl::Env::Default()->DeleteFile(result_path).IgnoreError();
+  };
+
+  // Invoke clang_offload_bundler and collect its output.
+  tsl::SubProcess clang_offload_bundler;
+  std::vector<std::string> clang_offload_bundler_args = {
+      clang_offload_bundler_path, absl::StrCat("--inputs=", inputs_list.str()),
+      absl::StrCat("--targets=", targets_list.str()), "--type=o",
+      absl::StrCat("--outputs=", result_path)};
+  if (VLOG_IS_ON(3)) {
+    VLOG(3) << absl::StrJoin(clang_offload_bundler_args, " ");
+  }
+  clang_offload_bundler.SetProgram(clang_offload_bundler_path,
+                                   clang_offload_bundler_args);
+  clang_offload_bundler.SetChannelAction(tsl::CHAN_STDERR, tsl::ACTION_PIPE);
+  if (!clang_offload_bundler.Start()) {
+    return tsl::errors::Internal("Failed to launch clang_offload_bundler.");
+  }
+  std::string stderr_output;
+  int exit_status = clang_offload_bundler.Communicate(
+      /*stdin_input=*/nullptr, /*stdout_output=*/nullptr, &stderr_output);
+  if (exit_status != 0) {
+    return tsl::errors::Internal(
+        absl::StrFormat("clang_offload_bundler exited with non-zero error "
+                        "code %d, output: %s",
+                        exit_status, stderr_output));
+  }
+  if (!stderr_output.empty()) {
+    VLOG(2) << stderr_output;
+  }
+
+  // Read in the result and return it as a byte vector.
+  std::string result_blob;
+  TF_RETURN_IF_ERROR(
+      tsl::ReadFileToString(tsl::Env::Default(), result_path, &result_blob));
+  return std::vector<uint8_t>(result_blob.begin(), result_blob.end());
 }
 
 }  // namespace stream_executor

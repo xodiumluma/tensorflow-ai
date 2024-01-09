@@ -9,7 +9,6 @@ load(
     "stream_executor_friends",
     "tf_additional_cuda_platform_deps",
     "tf_additional_cudnn_plugin_copts",
-    "tf_additional_cudnn_plugin_deps",
     "tf_additional_gpu_compilation_copts",
 )
 load("@local_tsl//tsl:tsl.bzl", "if_google", "if_nccl", "set_external_visibility", "tsl_copts")
@@ -131,7 +130,7 @@ cc_library(
     name = "cuda_driver",
     srcs = if_cuda_is_configured(["cuda_driver.cc"]),
     hdrs = if_cuda_is_configured(["cuda_driver.h"]),
-    defines = if_nccl(["NCCL_ENABLED=1"]),
+    defines = if_cuda(["XLA_ENABLE_CUDA"]) + if_nccl(["XLA_ENABLE_XCCL"]),
     visibility = ["//visibility:public"],
     deps = if_cuda_is_configured([
         ":cuda_diagnostics",
@@ -433,7 +432,7 @@ cc_library(
         "@local_tsl//tsl/platform:tensor_float_32_hdr_lib",
         "@local_tsl//tsl/platform:tensor_float_32_utils",
         "@local_tsl//tsl/util:env_var",
-    ]) + tf_additional_cudnn_plugin_deps(),
+    ]),
     alwayslink = True,
 )
 
