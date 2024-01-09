@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:current-bookworm-slim
 WORKDIR /buildmachine
 RUN npm i -g @bazel/bazelisk
