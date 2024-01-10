@@ -123,5 +123,8 @@ build --define=no_hdfs_support=true
 # Delete it when `cc_shared_library` is turned on by default
 build --experimental_cc_shared_library
 
+# cc_shared_library checks that libraries linked statically are done at most once
+build --experimental_link_static_libraries_once=false
+
 
 
