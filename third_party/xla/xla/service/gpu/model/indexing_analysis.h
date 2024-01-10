@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -25,13 +26,13 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/Hashing.h"
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/status.h"
-#include "xla/statusor.h"
+#include "xla/service/gpu/hlo_traversal.h"
 
 namespace xla {
 namespace gpu {
@@ -137,27 +138,21 @@ std::string ToString(const mlir::AffineMap& affine_map);
 
 // Computes indexing maps for all input operands necessary to compute an element
 // of the `output_id` instruction output.
-StatusOr<HloInstructionIndexing> ComputeOutputToInputIndexing(
+std::optional<HloInstructionIndexing> ComputeOutputToInputIndexing(
     const HloInstruction* instr, int output_id, mlir::MLIRContext* ctx);
 
 // Computes indexing maps for all output operands that the element of the
 // `input_id` instruction input will participate in.
-StatusOr<HloInstructionIndexing> ComputeInputToOutputIndexing(
+std::optional<HloInstructionIndexing> ComputeInputToOutputIndexing(
     const HloInstruction* instr, int input_id, mlir::MLIRContext* ctx);
 
 // Groups indexing maps by instructions.
 using IndexingMapSet = absl::flat_hash_set<IndexingMap>;
-absl::flat_hash_map<const HloInstruction*, IndexingMapSet>
-GroupIndexingMapsByProducers(const HloInstructionIndexing& indexing,
-                             const HloInstruction* instr);
-
-// Computes producer indexing maps and fuse/compose them with the consumer
-// indexing maps.
-Status FuseProducerConsumerOutputToInputIndexing(
-    const HloInstruction* producer_instr,
-    absl::flat_hash_map<const HloInstruction*,
-                        absl::flat_hash_set<IndexingMap>>* consumer_indexing,
-    mlir::MLIRContext* mlir_context);
+using GroupedByOpIndexingMap =
+    absl::flat_hash_map<const HloInstruction*, IndexingMapSet>;
+std::optional<GroupedByOpIndexingMap> ComputeGroupedOutputToInputIndexing(
+    const HloFusionAdaptor& fusion_adaptor, int output_id,
+    mlir::MLIRContext* ctx);
 
 // Computes a transpose indexing map.
 mlir::AffineMap ComputeTransposeIndexingMap(
