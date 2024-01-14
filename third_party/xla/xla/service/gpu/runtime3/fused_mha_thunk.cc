@@ -63,7 +63,7 @@ std::optional<se::DeviceMemoryBase> AssignBufferIfNotNull(
              : std::nullopt;
 }
 
-Status FusedMHAThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status FusedMHAThunk::ExecuteOnStream(const ExecuteParams& params) {
   const auto& buffer_allocations = *params.buffer_allocations;
   se::DeviceMemoryBase lhs_bmm1_buffer =
       buffer_allocations.GetDeviceAddress(lhs_bmm1_buffer_);
@@ -91,7 +91,7 @@ Status FusedMHAThunk::ExecuteOnStream(const ExecuteParams& params) {
                                 params.stream, opts));
 
   if (!params.stream->ok()) {
-    return InternalError("FusedMHAThunk::ExecuteOnStream failed.");
+    return Internal("FusedMHAThunk::ExecuteOnStream failed.");
   }
   return absl::OkStatus();
 }
@@ -141,7 +141,8 @@ FusedMHABackwardThunk::GetOrCreateRunner(
   return *it->second;
 }
 
-Status FusedMHABackwardThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status FusedMHABackwardThunk::ExecuteOnStream(
+    const ExecuteParams& params) {
   const auto& buffer_allocations = *params.buffer_allocations;
   se::DeviceMemoryBase bmm1_grad_gemm1_rhs_buffer =
       buffer_allocations.GetDeviceAddress(bmm1_grad_gemm1_rhs_buffer_);
@@ -196,7 +197,7 @@ Status FusedMHABackwardThunk::ExecuteOnStream(const ExecuteParams& params) {
       d_s_buffer, softmax_sum_buffer, d_Q_accum_buffer, mask_buffer,
       d_bias_buffer, fwd_output_buffer, bias_buffer, params.stream, opts));
   if (!params.stream->ok()) {
-    return InternalError("FusedMHABackwardThunk::ExecuteOnStream failed.");
+    return Internal("FusedMHABackwardThunk::ExecuteOnStream failed.");
   }
   return absl::OkStatus();
 }

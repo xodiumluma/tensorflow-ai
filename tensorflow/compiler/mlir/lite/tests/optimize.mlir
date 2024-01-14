@@ -361,6 +361,21 @@ func.func @fuseMulIntoFullyConnected(%arg0: tensor<4x2xf32>) -> tensor<4x2xf32> 
 // CHECK:  return %[[RES]] : tensor<4x2xf32>
 }
 
+// CHECK-LABEL: @DontFuseMulIntoFullyConnectedForLargeFilter
+func.func @DontFuseMulIntoFullyConnectedForLargeFilter(%arg0: tensor<128x256000xf32>) -> tensor<128x1024xf32> {
+  %cst0 = arith.constant dense<2.0> : tensor<1024x256000xf32>
+  %cst1 = arith.constant dense<2.0> : tensor<1024xf32>
+  %cst2 = arith.constant dense<2.0> : tensor<1024xf32>
+
+  %0 = "tfl.fully_connected"(%arg0, %cst0, %cst1) {fused_activation_function = "NONE", keep_num_dims = false, weights_format = "DEFAULT"} : (tensor<128x256000xf32>, tensor<1024x256000xf32>, tensor<1024xf32>) -> tensor<128x1024xf32>
+  %1 = "tfl.mul"(%0, %cst2) {fused_activation_function = "RELU6"} : (tensor<128x1024xf32>, tensor<1024xf32>) -> tensor<128x1024xf32>
+
+  func.return %1 : tensor<128x1024xf32>
+
+// CHECK:  %[[a:.*]] = "tfl.fully_connected"(%arg0, %cst_0, %cst_1) {fused_activation_function = "NONE", keep_num_dims = false, weights_format = "DEFAULT"}
+// CHECK:  %[[b:.*]] = tfl.mul(%[[a]], %cst) {fused_activation_function = "RELU6"}
+}
+
 
 // CHECK-LABEL: @fuseAddIntoFollowingFullyConnectedWithQDQs
 func.func @fuseAddIntoFollowingFullyConnectedWithQDQs(%arg0: tensor<4x2xf32>) -> tensor<4x2xf32> {
@@ -3782,4 +3797,66 @@ func.func @fuseLogSoftmaxNotLastAxis(%arg0: tensor<10x10x10xf32>) -> tensor<10x1
   %6 = tfl.sub(%2, %5) {fused_activation_function = "NONE"} : (tensor<10x10x10xf32>, tensor<10x1x10xf32>) -> tensor<10x10x10xf32>
   return %6 : tensor<10x10x10xf32>
  // CHECK-NOT: "tfl.log_softmax"(%arg0) : (tensor<10x10x10f32>) -> tensor<10x10x10xf32>
+}
+
+// CHECK-LABEL: @ReorderNCHWTransposeAddForConv
+func.func @ReorderNCHWTransposeAddForConv(%arg0: tensor<1x40x40x1xf32>, %filter: tensor<3x3x3x3xf32>) -> tensor<1x3x40x40xf32> {
+  %no_bias = "tfl.no_value"() {value} : () -> none
+  %perm = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
+  %bias = arith.constant dense<1.5> : tensor<1x3x1x1xf32>
+  %0 = "tfl.conv_2d"(%arg0, %filter, %no_bias) {dilation_h_factor = 1 : i32, dilation_w_factor = 1 : i32, fused_activation_function = "NONE", padding = "SAME", stride_h = 1 : i32, stride_w = 1 : i32} : (tensor<1x40x40x1xf32>, tensor<3x3x3x3xf32>, none) -> tensor<1x40x40x3xf32>
+  %1 = "tfl.transpose"(%0, %perm) : (tensor<1x40x40x3xf32>, tensor<4xi32>) -> tensor<1x3x40x40xf32>
+  %2 = "tfl.add"(%1, %bias) {fused_activation_function = "NONE"} : (tensor<1x3x40x40xf32>, tensor<1x3x1x1xf32>) -> tensor<1x3x40x40xf32>
+  func.return %2 : tensor<1x3x40x40xf32>
+
+  // CHECK: %[[perm:.*]] = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
+  // CHECK: %[[conv:.*]] = "tfl.conv_2d"
+  // CHECK: %[[add:.*]] = tfl.add(%[[conv]]
+  // CHECK: %[[transpose:.*]] = "tfl.transpose"(%[[add]], %[[perm]])
+  // CHECK: return %[[transpose]]
+}
+
+// CHECK-LABEL: @NoReorderNCHWTransposeAddNotConv
+func.func @NoReorderNCHWTransposeAddNotConv(%arg0: tensor<1x40x40x3xf32>, %filter: tensor<3x3x3x3xf32>) -> tensor<1x3x40x40xf32> {
+  %no_bias = "tfl.no_value"() {value} : () -> none
+  %perm = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
+  %bias = arith.constant dense<1.5> : tensor<1x3x1x1xf32>
+  %1 = "tfl.transpose"(%arg0, %perm) : (tensor<1x40x40x3xf32>, tensor<4xi32>) -> tensor<1x3x40x40xf32>
+  %2 = "tfl.add"(%1, %bias) {fused_activation_function = "NONE"} : (tensor<1x3x40x40xf32>, tensor<1x3x1x1xf32>) -> tensor<1x3x40x40xf32>
+  func.return %2 : tensor<1x3x40x40xf32>
+
+  // CHECK: %[[transpose:.*]] = "tfl.transpose"
+  // CHECK: %[[add:.*]] = tfl.add(%[[transpose]],
+  // CHECK: return %[[add]]
+}
+
+// CHECK-LABEL: @NoReorderNCHWTransposeAddNotNCHW
+func.func @NoReorderNCHWTransposeAddNotNCHW(%arg0: tensor<1x40x40x1xf32>, %filter: tensor<3x3x3x3xf32>) -> tensor<1x40x3x40xf32> {
+  %no_bias = "tfl.no_value"() {value} : () -> none
+  %perm = arith.constant dense<[0, 2, 3, 1]> : tensor<4xi32>
+  %bias = arith.constant dense<1.5> : tensor<1x1x3x1xf32>
+  %0 = "tfl.conv_2d"(%arg0, %filter, %no_bias) {dilation_h_factor = 1 : i32, dilation_w_factor = 1 : i32, fused_activation_function = "NONE", padding = "SAME", stride_h = 1 : i32, stride_w = 1 : i32} : (tensor<1x40x40x1xf32>, tensor<3x3x3x3xf32>, none) -> tensor<1x40x40x3xf32>
+  %1 = "tfl.transpose"(%0, %perm) : (tensor<1x40x40x3xf32>, tensor<4xi32>) -> tensor<1x40x3x40xf32>
+  %2 = "tfl.add"(%1, %bias) {fused_activation_function = "NONE"} : (tensor<1x40x3x40xf32>, tensor<1x1x3x1xf32>) -> tensor<1x40x3x40xf32>
+  func.return %2 : tensor<1x40x3x40xf32>
+
+  // CHECK: %[[transpose:.*]] = "tfl.transpose"
+  // CHECK: %[[add:.*]] = tfl.add(%[[transpose]],
+  // CHECK: return %[[add]]
+}
+
+
+// CHECK-LABEL: @NoReorderNCHWTransposeAddNotBias
+func.func @NoReorderNCHWTransposeAddNotBias(%arg0: tensor<1x40x40x1xf32>, %filter: tensor<3x3x3x3xf32>) -> tensor<1x3x40x40xf32> {
+  %no_bias = "tfl.no_value"() {value} : () -> none
+  %perm = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
+  %bias = arith.constant dense<1.5> : tensor<1x3x40x40xf32>
+  %0 = "tfl.conv_2d"(%arg0, %filter, %no_bias) {dilation_h_factor = 1 : i32, dilation_w_factor = 1 : i32, fused_activation_function = "NONE", padding = "SAME", stride_h = 1 : i32, stride_w = 1 : i32} : (tensor<1x40x40x1xf32>, tensor<3x3x3x3xf32>, none) -> tensor<1x40x40x3xf32>
+  %1 = "tfl.transpose"(%0, %perm) : (tensor<1x40x40x3xf32>, tensor<4xi32>) -> tensor<1x3x40x40xf32>
+  %2 = "tfl.add"(%1, %bias) {fused_activation_function = "NONE"} : (tensor<1x3x40x40xf32>, tensor<1x3x40x40xf32>) -> tensor<1x3x40x40xf32>
+  func.return %2 : tensor<1x3x40x40xf32>
+
+  // CHECK: %[[transpose:.*]] = "tfl.transpose"
+  // CHECK: %[[add:.*]] = tfl.add %[[transpose]],
+  // CHECK: return %[[add]]
 }

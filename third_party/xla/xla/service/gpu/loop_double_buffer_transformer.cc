@@ -74,9 +74,10 @@ void SetChannelIdForNewCollective(HloInstruction* new_instr,
 
     wrapped_instr->set_channel_id(new_channel_id);
     if (channel_id_comp_map.find(new_channel_id) == channel_id_comp_map.end()) {
-      channel_id_comp_map[new_channel_id] = new_instr->called_computations()[0];
+      channel_id_comp_map[new_channel_id] =
+          new_instr->async_wrapped_computation();
     } else {
-      channel_id_comp_map[new_channel_id]->AddAsyncInstruction(*new_instr);
+      channel_id_comp_map[new_channel_id]->AddAsyncStart(new_instr);
     }
   } else if (hlo_query::IsCollectiveCommunicationOp(new_instr->opcode()) ||
              hlo_query::IsAsyncCollectiveStartOp(new_instr->opcode())) {
@@ -84,8 +85,8 @@ void SetChannelIdForNewCollective(HloInstruction* new_instr,
   }
 }
 
-Status PeelInstructionsForOddTripCount(HloModule* module,
-                                       HloInstruction* while_instr) {
+absl::Status PeelInstructionsForOddTripCount(HloModule* module,
+                                             HloInstruction* while_instr) {
   std::string suffix = "peeled_double_buffer";
   absl::flat_hash_map<HloInstruction*, HloInstruction*> old_to_new_map;
   HloComputation* while_body = while_instr->while_body();
@@ -149,7 +150,7 @@ Status PeelInstructionsForOddTripCount(HloModule* module,
 }
 }  // namespace
 
-StatusOr<bool> LoopDoubleBufferTransformer::Run(
+absl::StatusOr<bool> LoopDoubleBufferTransformer::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;

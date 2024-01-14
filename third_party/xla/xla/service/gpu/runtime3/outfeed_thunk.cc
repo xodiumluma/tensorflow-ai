@@ -28,7 +28,7 @@ OutfeedThunk::OutfeedThunk(ThunkInfo thunk_info,
     : Thunk(Kind::kOutfeed, thunk_info),
       source_slices_(std::move(source_slices)) {}
 
-Status OutfeedThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status OutfeedThunk::ExecuteOnStream(const ExecuteParams& params) {
   se::Stream& stream = *params.stream;
   const BufferAllocations& buffer_allocations = *params.buffer_allocations;
 
@@ -81,7 +81,7 @@ Status OutfeedThunk::ExecuteOnStream(const ExecuteParams& params) {
 
     BufferAllocation::Slice source_slice = source_slices_[index].slice;
     if (!source_slice.allocation())
-      return InternalError("outfeed source missing buffer allocation");
+      return Internal("outfeed source missing buffer allocation");
     se::DeviceMemoryBase data_address =
         buffer_allocations.GetDeviceAddress(source_slice);
 
@@ -93,9 +93,9 @@ Status OutfeedThunk::ExecuteOnStream(const ExecuteParams& params) {
         .ThenDoHostCallback([&buffer]() { buffer->Done(); });
   }
 
-  Status block_status = stream.BlockHostUntilDone();
+  absl::Status block_status = stream.BlockHostUntilDone();
   if (!block_status.ok()) {
-    return InternalError("Failed to complete data transfer on stream %p: %s",
+    return Internal("Failed to complete data transfer on stream %p: %s",
                          &stream, block_status.message());
   }
 

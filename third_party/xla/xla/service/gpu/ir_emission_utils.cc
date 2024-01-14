@@ -439,7 +439,7 @@ static int64_t GetAllocationIndex(mlir::BlockArgument func_arg,
   return func_arg.getArgNumber();
 }
 
-StatusOr<BufferAllocation::Slice> GetAllocationSlice(
+absl::StatusOr<BufferAllocation::Slice> GetAllocationSlice(
     mlir::Value v, absl::Span<const BufferAllocation* const> allocations,
     std::string* constant_name) {
   if (constant_name) {
@@ -556,7 +556,7 @@ absl::InlinedVector<const HloInstruction*, 4> GetStartIndices(T instr) {
   return result;
 }
 
-StatusOr<bool> CanEmitFusedDynamicUpdateSliceInPlaceForGpu(
+absl::StatusOr<bool> CanEmitFusedDynamicUpdateSliceInPlaceForGpu(
     const HloFusionInstruction* fusion,
     const BufferAssignment* buffer_assignment,
     const std::vector<const HloInstruction*>& roots) {
@@ -995,17 +995,17 @@ std::optional<HloInstructionAdaptor> FindTransposeHero(
       // hero.
       if (transpose) {
         transpose = std::nullopt;
-        return TraversalResult::kAbortTraversal;
+        return TraversalResult::kInterrupt;
       }
       transpose = node;
-      return TraversalResult::kDoNotVisitOperands;
+      return TraversalResult::kSkip;
     }
 
     if (!IsIntermediate(&node.instruction(), /*allowed_operand_count=*/3)) {
       non_trivial.push_back(node);
-      return TraversalResult::kDoNotVisitOperands;
+      return TraversalResult::kSkip;
     }
-    return TraversalResult::kVisitOperands;
+    return TraversalResult::kAdvance;
   };
   HloBfsConsumersFirstTraversal({root}, fusion, visit);
 
@@ -1017,9 +1017,9 @@ std::optional<HloInstructionAdaptor> FindTransposeHero(
     auto visit_nt = [&transpose](HloInstructionAdaptor node) {
       if (node == transpose) {
         transpose = std::nullopt;
-        return TraversalResult::kAbortTraversal;
+        return TraversalResult::kInterrupt;
       }
-      return TraversalResult::kVisitOperands;
+      return TraversalResult::kAdvance;
     };
     HloBfsConsumersFirstTraversal(non_trivial, fusion, visit_nt);
   }
@@ -1056,7 +1056,11 @@ const HloInstruction& FindNonTrivialHero(const HloInstruction& instr,
 }
 
 const HloInstruction& FindNonTrivialHero(const HloInstruction& instr) {
-  CHECK_NE(instr.opcode(), HloOpcode::kFusion);
+  // It doesn't really make sense to call this function with a fusion, but it
+  // happens. Return the fusion itself for historical reasons.
+  // TODO(jreiffers): Clean this up.
+  if (instr.opcode() == HloOpcode::kFusion) return instr;
+
   return FindNonTrivialHero(instr,
                             *HloFusionAdaptor::ForComputation(instr.parent()));
 }
@@ -1188,7 +1192,8 @@ bool IsAMDGPU(const llvm::Module* module) {
   return llvm::Triple(module->getTargetTriple()).isAMDGPU();
 }
 
-StatusOr<DenseDataIntermediate> LiteralToXlaFormat(const Literal& literal) {
+absl::StatusOr<DenseDataIntermediate> LiteralToXlaFormat(
+    const Literal& literal) {
   PrimitiveType element_type = literal.shape().element_type();
   if (!primitive_util::IsArrayType(element_type)) {
     return Internal("Unsupported type in LiteralToXlaFormat");

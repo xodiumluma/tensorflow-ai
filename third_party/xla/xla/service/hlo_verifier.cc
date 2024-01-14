@@ -1177,8 +1177,10 @@ Status ShapeVerifier::HandleBroadcast(HloInstruction* broadcast) {
   // ShapeInference method. Check the output shape explicitly.
   const Shape& operand_shape = broadcast->operand(0)->shape();
   // Check for mixed precision.
-  TF_RET_CHECK(SameElementType(broadcast->shape(), operand_shape));
-  TF_RET_CHECK(operand_shape.rank() == broadcast->dimensions().size());
+  TF_RET_CHECK(SameElementType(broadcast->shape(), operand_shape))
+      << broadcast->ToString();
+  TF_RET_CHECK(operand_shape.rank() == broadcast->dimensions().size())
+      << broadcast->ToString();
   for (int64_t operand_dimension = 0; operand_dimension < operand_shape.rank();
        ++operand_dimension) {
     int64_t output_dimension = broadcast->dimensions()[operand_dimension];
@@ -1501,15 +1503,6 @@ Status CheckAsyncOpOperand(const HloInstruction* async_op) {
         operand->async_wrapped_instruction()->ToString(),
         async_op->async_wrapped_computation()->execution_thread(),
         operand->async_wrapped_computation()->execution_thread());
-  }
-  if (async_op->async_group_id() != operand->async_group_id()) {
-    return InternalError(
-        "%s expects its operand to have the same group id (%s vs %s).",
-        HloOpcodeString(async_op->opcode()),
-        async_op->async_group_id() ? absl::StrCat(*async_op->async_group_id())
-                                   : "none",
-        operand->async_group_id() ? absl::StrCat(*operand->async_group_id())
-                                  : "none");
   }
   return OkStatus();
 }

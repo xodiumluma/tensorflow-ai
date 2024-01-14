@@ -48,8 +48,8 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_live_range.h"
 #include "xla/hlo/utils/hlo_matchers.h"
-#include "xla/service/allocation_block.h"
-#include "xla/service/heap_simulator.h"
+#include "xla/service/heap_simulator/allocation_block.h"
+#include "xla/service/heap_simulator/heap_simulator.h"
 #include "xla/service/hlo_cost_analysis.h"
 #include "xla/service/hlo_value.h"
 #include "xla/service/instruction_hoister.h"
@@ -7304,8 +7304,8 @@ ENTRY entry {
   negate2 = f32[2,3] negate(negate1)
   negate3 = f32[2,3] negate(negate2)
   negate4 = f32[2,3] negate(negate3)
-  async-start = ((f32[2,3]), f32[2,3], f32[2]) async-start(negate1), async_group_id=0, async_execution_thread="foobar", calls=async_comp
-  async-done = f32[2,3] async-done(async-start), async_group_id=0, async_execution_thread="foobar", calls=async_comp
+  async-start = ((f32[2,3]), f32[2,3], f32[2]) async-start(negate1), async_execution_thread="foobar", calls=async_comp
+  async-done = f32[2,3] async-done(async-start), async_execution_thread="foobar", calls=async_comp
   add0 = f32[2,3] add(negate0, async-done)
   negate5 = f32[2,3] negate(add0)
   negate6 = f32[2,3] negate(negate5)
@@ -7540,6 +7540,66 @@ ENTRY entry {
   AssignMemorySpaceUsingCostAnalysis(module.get());
   EXPECT_THAT(FindInstruction(module.get(), "negate1")->operand(0),
               op::Parameter(1));
+}
+
+TEST_P(MemorySpaceAssignmentTest, AliasedOperandBug) {
+  // Test for a case where two aliased operands into the same instruction
+  // (param0 and custom_call2) cause a violation of the required assignment.
+  absl::string_view hlo_string = R"(
+HloModule module, is_scheduled=true
+
+ENTRY entry {
+  param0 = f32[4,4]{0,1} parameter(0)
+  param1 = f32[4]{0} parameter(1)
+  param2 = f32[4,4]{0,1} parameter(2)
+  negate0 = f32[4]{0} negate(param1)
+  negate1 = f32[4]{0} negate(negate0)
+  negate2 = f32[4]{0} negate(negate1)
+  negate3 = f32[4]{0} negate(negate2)
+  negate4 = f32[4]{0} negate(negate3)
+  negate5 = f32[4]{0} negate(negate4)
+  custom_call1 = f32[4,4]{0,1} custom-call(param0), custom_call_target="FooBar", output_to_operand_aliasing={{}: (0, {})}
+  tanh = f32[4,4]{0,1} tanh(param2)
+  negate6 = f32[4]{0} negate(negate5)
+  negate7 = f32[4]{0} negate(negate6)
+  negate8 = f32[4]{0} negate(negate7)
+  negate9 = f32[4]{0} negate(negate8)
+  negate10 = f32[4]{0} negate(negate9)
+  negate11 = f32[4]{0} negate(negate10)
+  negate12 = f32[4]{0} negate(negate11)
+  negate13 = f32[4]{0} negate(negate12)
+  negate14 = f32[4]{0} negate(negate13)
+  negate15 = f32[4]{0} negate(negate14)
+  negate16 = f32[4]{0} negate(negate15)
+  custom_call2 = f32[4,4]{0,1} custom-call(custom_call1), custom_call_target="FooBar", output_to_operand_aliasing={{}: (0, {})}
+  custom_call3 = f32[4,4]{0,1} custom-call(param0, custom_call2), custom_call_target="FooBar", output_to_operand_aliasing={{}: (0, {})}
+  ROOT root = f32[4,4]{0,1} add(tanh, custom_call2)
+}
+  )";
+
+  MemorySpaceAssignment::BufferIntervalCompare buffer_interval_compare =
+      [](const MemorySpaceAssignment::BufferInterval& a,
+         const MemorySpaceAssignment::BufferInterval& b) {
+        auto get_inst_priority = [](const HloInstruction* instruction) {
+          if (instruction->name() == "param2") {
+            return 0;
+          }
+          if (instruction->name() == "param0") {
+            return 1;
+          }
+          return 2;
+        };
+
+        return get_inst_priority(a.buffer->defining_instruction()) <
+               get_inst_priority(b.buffer->defining_instruction());
+      };
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  InstructionCountPrefetchIntervalPicker prefetch_interval_picker(2, 10);
+  Options options = DefaultMemorySpaceOptions();
+  AssignMemorySpace(module.get(), options, buffer_interval_compare,
+                    &prefetch_interval_picker);
 }
 
 INSTANTIATE_TEST_SUITE_P(MemorySpaceAssignmentInstantiation,
@@ -10658,6 +10718,72 @@ TEST_F(MemoryBoundLoopOptimizerTest, OptimizerEndToEndUnsupportedAllocation) {
 
   const HloInstruction* op2 = FindInstruction(module.get(), "op2");
   EXPECT_EQ(op2->shape().layout().memory_space(), kAlternateMemorySpace);
+}
+
+TEST_F(MemoryBoundLoopOptimizerTest, TempAndPinnedAllocations) {
+  absl::string_view hlo_str = R"(
+  HloModule module, is_scheduled=true
+
+  while_cond {
+    while_cond_param = (f32[1,4], f32[1,4], f32[1,4], f32[1,4], f32[1,4], pred[]) parameter(0)
+    ROOT p = pred[] get-tuple-element(while_cond_param), index=5
+  }
+
+  while_body {
+    while_body_param = (f32[1,4], f32[1,4], f32[1,4], f32[1,4], f32[1,4], pred[]) parameter(0)
+    pinned_prev_param0 = f32[1,4] get-tuple-element(while_body_param), index=0
+    next_param0 = f32[1,4] get-tuple-element(while_body_param), index=1
+    prev_prev_op3 = f32[1,4] get-tuple-element(while_body_param), index=2
+    prev_prev_op4 = f32[1,4] get-tuple-element(while_body_param), index=3
+    prev_op0 = f32[1,4] add(f32[1,4] prev_prev_op3, f32[1,4] prev_prev_op4)
+    prev_op1 = f32[1,4] add(f32[1,4] prev_prev_op4, f32[1,4] prev_op0)
+    prev_op2 = f32[1,4] add(f32[1,4] prev_op0, f32[1,4] prev_op1)
+    prev_op3 = f32[1,4] add(f32[1,4] prev_op1, f32[1,4] prev_op2)
+    prev_op4 = f32[1,4] multiply(f32[1,4] pinned_prev_param0, f32[1,4] prev_op3)
+    op0 = f32[1,4] add(f32[1,4] prev_op3, f32[1,4] prev_op4)
+    op1 = f32[1,4] add(f32[1,4] prev_op4, f32[1,4] op0)
+    op2 = f32[1,4] add(f32[1,4] op0, f32[1,4] op1)
+    op3 = f32[1,4] add(f32[1,4] op1, f32[1,4] op2)
+    op4 = f32[1,4] multiply(f32[1,4] pinned_prev_param0, f32[1,4] op3)
+    next_op0 = f32[1,4] add(f32[1,4] op3, f32[1,4] op4)
+    next_op1 = f32[1,4] add(f32[1,4] op4, f32[1,4] next_op0)
+    next_op2 = f32[1,4] add(f32[1,4] next_op0, f32[1,4] next_op1)
+    next_op3 = f32[1,4] add(f32[1,4] next_op1, f32[1,4] next_op2)
+    next_op4 = f32[1,4] multiply(f32[1,4] pinned_prev_param0, f32[1,4] next_op3)
+    p = pred[] get-tuple-element(while_body_param), index=5
+    ROOT root = tuple(pinned_prev_param0, next_param0, prev_prev_op3, prev_prev_op4, next_op4, p)
+  }
+
+  ENTRY entry {
+    p0 = f32[1,4] parameter(0)
+    p1 = f32[1,4] parameter(1)
+    p2 = f32[1,4] parameter(2)
+    p3 = f32[1,4] parameter(3)
+    p4 = pred[] parameter(4)
+    copy = f32[1,4] copy(p3)
+    tuple = (f32[1,4], f32[1,4], f32[1,4], f32[1,4], f32[1,4], pred[]) tuple(p0, p1, p2, p3, copy, p4)
+    while = (f32[1,4], f32[1,4], f32[1,4], f32[1,4], f32[1,4], pred[]) while(tuple), condition=while_cond, body=while_body
+    ROOT root = f32[1,4] get-tuple-element(while), index=4
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo_str));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto optimizer,
+                          CreateOptimizer(19, 24, module.get(),
+                                          /*alternate_memory_size=*/512));
+  optimizer->Optimize();
+
+  const std::vector<int64_t>& remaining_memory = optimizer->remaining_memory();
+  // Time 0: 3 temporaries (16 B) + 1 pinned (16 B)
+  EXPECT_EQ(remaining_memory.at(0), 512 - (3 * 16 + 16));
+  // Time 1: 3 temporaries (16 B) + 1 pinned (16 B)
+  EXPECT_EQ(remaining_memory.at(1), 512 - (3 * 16 + 16));
+  // Time 2: 3 temporaries (16 B) + 1 pinned (16 B)
+  EXPECT_EQ(remaining_memory.at(2), 512 - (3 * 16 + 16));
+  // Time 3: 3 temporaries (16 B) + 1 pinned (16 B)
+  EXPECT_EQ(remaining_memory.at(3), 512 - (3 * 16 + 16));
+  // Time 4: 2 temporaries (16 B) + 1 pinned (16 B)
+  EXPECT_EQ(remaining_memory.at(4), 512 - (2 * 16 + 16));
 }
 
 TEST_F(MemoryBoundLoopOptimizerTest, OptimizerEndToEndWhileLoop) {

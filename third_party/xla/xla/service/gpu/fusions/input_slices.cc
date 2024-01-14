@@ -68,7 +68,7 @@ namespace {
 //   Write to output of slice1
 // }
 //
-Status EmitElementForInputFusibleSlices(
+absl::Status EmitElementForInputFusibleSlices(
     ElementalIrEmitter& elemental_emitter,
     const HloComputation* fused_computation,
     const std::vector<llvm_ir::IrArray>& inputs,
@@ -149,7 +149,7 @@ Status EmitElementForInputFusibleSlices(
 // Returns the input shape of the ROOT slices if all the input shapes of ROOT
 // slices are the same and the slices are non-strided. Otherwise, returns
 // FailedPrecondition.
-StatusOr<Shape> GetConsistentInputShapeForRootSlices(
+absl::StatusOr<Shape> GetConsistentInputShapeForRootSlices(
     const HloComputation* fused_computation) {
   const HloInstruction& root = *fused_computation->root_instruction();
   if (root.opcode() == HloOpcode::kSlice) {
@@ -200,18 +200,16 @@ std::optional<IndexingMap> InputSlicesFusion::ComputeThreadIdToOutputIndexing(
   return result;
 }
 
-Status InputSlicesFusion::EmitKernel(IrEmitterContext& ir_emitter_context,
-                                     const HloFusionInstruction& fusion,
-                                     const LaunchDimensions& launch_dims,
-                                     std::vector<llvm_ir::IrArray> inputs,
-                                     std::vector<llvm_ir::IrArray> outputs,
-                                     llvm::IRBuilder<>* builder) const {
+absl::Status InputSlicesFusion::EmitKernel(
+    IrEmitterContext& ir_emitter_context, const HloFusionInstruction& fusion,
+    const LaunchDimensions& launch_dims, std::vector<llvm_ir::IrArray> inputs,
+    std::vector<llvm_ir::IrArray> outputs, llvm::IRBuilder<>* builder) const {
   TF_ASSIGN_OR_RETURN(Shape element_shape,
                       GetConsistentInputShapeForRootSlices(
                           fusion.fused_instructions_computation()));
   GpuElementalIrEmitter elemental_emitter(ir_emitter_context, builder);
   return ParallelLoopEmitter(
-             [&](const llvm_ir::IrArray::Index index) -> Status {
+             [&](const llvm_ir::IrArray::Index index) -> absl::Status {
                return EmitElementForInputFusibleSlices(
                    elemental_emitter, fusion.fused_instructions_computation(),
                    inputs, outputs, index, builder);

@@ -114,9 +114,11 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
   explicit TritonAutotunerVisitor(const AutotuneConfig& config)
       : config_(config) {}
 
-  Status HandleFusion(HloInstruction* hlo) override {
-    TF_ASSIGN_OR_RETURN(auto backend_config,
-                        hlo->backend_config<FusionBackendConfig>());
+  absl::Status HandleFusion(HloInstruction* hlo) override {
+    TF_ASSIGN_OR_RETURN(auto gpu_config,
+                        hlo->backend_config<GpuBackendConfig>());
+    FusionBackendConfig& backend_config =
+        *gpu_config.mutable_fusion_backend_config();
     if (backend_config.kind() != kTritonGemmFusionKind) {
       return absl::OkStatus();
     }
@@ -126,7 +128,7 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
       TF_ASSIGN_OR_RETURN(
           AutotuneResult autotune_result,
           AutotunerUtil::Autotune(
-              hlo, config_, [&]() -> StatusOr<AutotuneResult> {
+              hlo, config_, [&]() -> absl::StatusOr<AutotuneResult> {
                 if (config_.IsDeviceless()) {
                   return absl::InternalError(absl::StrCat(
                       "Expect autotune result cache hit for deviceless "
@@ -139,7 +141,7 @@ class TritonAutotunerVisitor : public DfsHloRewriteVisitor {
 
       if (autotune_result.has_triton()) {
         *backend_config.mutable_triton_gemm_config() = autotune_result.triton();
-        TF_RETURN_IF_ERROR(hlo->set_backend_config(backend_config));
+        TF_RETURN_IF_ERROR(hlo->set_backend_config(gpu_config));
       } else {
         // Falling back to cuBLAS: Converting the fusion to a Call, so that it
         // can be inlined back again.
@@ -192,7 +194,8 @@ class GemmConfigSetCollector : public ConstDfsHloVisitorWithDefault {
   explicit GemmConfigSetCollector(const AutotuneConfig& config)
       : config_(config) {}
 
-  StatusOr<absl::flat_hash_map<const HloFusionInstruction*, GemmConfigSet>>
+  absl::StatusOr<
+      absl::flat_hash_map<const HloFusionInstruction*, GemmConfigSet>>
   CollectGemmConfigSets(
       const HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads = {}) {
@@ -204,11 +207,14 @@ class GemmConfigSetCollector : public ConstDfsHloVisitorWithDefault {
     return std::move(gemm_config_sets_);
   }
 
-  Status HandleFusion(const HloInstruction* hlo) override {
+  absl::Status HandleFusion(const HloInstruction* hlo) override {
     const HloFusionInstruction* fusion = Cast<HloFusionInstruction>(hlo);
 
-    TF_ASSIGN_OR_RETURN(auto backend_config,
-                        hlo->backend_config<FusionBackendConfig>());
+    TF_ASSIGN_OR_RETURN(auto gpu_config,
+                        hlo->backend_config<GpuBackendConfig>());
+    const FusionBackendConfig& backend_config =
+        gpu_config.fusion_backend_config();
+
     if (backend_config.kind() != kTritonGemmFusionKind ||
         backend_config.has_triton_gemm_config()) {
       return absl::OkStatus();
@@ -225,7 +231,7 @@ class GemmConfigSetCollector : public ConstDfsHloVisitorWithDefault {
     return absl::OkStatus();
   }
 
-  Status DefaultAction(const HloInstruction* hlo) override {
+  absl::Status DefaultAction(const HloInstruction* hlo) override {
     return absl::OkStatus();
   }
 
@@ -435,7 +441,7 @@ std::vector<TritonGemmConfig> ReduceTileSizes(
 
 int GetLogEveryN() { return VLOG_IS_ON(3) ? 100 : 1000; }
 
-StatusOr<std::unique_ptr<HloModule>> TritonGemmAutotuneExtractor(
+absl::StatusOr<std::unique_ptr<HloModule>> TritonGemmAutotuneExtractor(
     const TritonGemmConfig& config,
     const se::DeviceDescription& gpu_device_info,
     const HloFusionInstruction* fusion, DebugOptions debug_opts,
@@ -456,10 +462,13 @@ StatusOr<std::unique_ptr<HloModule>> TritonGemmAutotuneExtractor(
   HloComputation* entry_computation = new_module->entry_computation();
   HloInstruction* cloned_dot_fusion = entry_computation->root_instruction();
 
-  TF_ASSIGN_OR_RETURN(auto backend_config,
-                      cloned_dot_fusion->backend_config<FusionBackendConfig>());
+  TF_ASSIGN_OR_RETURN(auto gpu_config,
+                      cloned_dot_fusion->backend_config<GpuBackendConfig>());
+  FusionBackendConfig& backend_config =
+      *gpu_config.mutable_fusion_backend_config();
+
   *backend_config.mutable_triton_gemm_config() = config.ToProto();
-  TF_RETURN_IF_ERROR(cloned_dot_fusion->set_backend_config(backend_config));
+  TF_RETURN_IF_ERROR(cloned_dot_fusion->set_backend_config(gpu_config));
 
   if (config.split_k > 1) {
     TF_RETURN_IF_ERROR(MakeDotSplitKBatch(cloned_dot_fusion, config));
@@ -475,7 +484,7 @@ StatusOr<std::unique_ptr<HloModule>> TritonGemmAutotuneExtractor(
     if (root->opcode() == HloOpcode::kReduce) {
       HloInstruction* fusion_instruction =
           entry_computation->AddInstruction(HloInstruction::CreateFusion(
-              root->shape(), ChooseFusionKind(*root, *root), root));
+              root->shape(), ChooseFusionKind(*root), root));
       HloInstruction* init_value = root->mutable_operand(1);
       TF_CHECK_OK(
           entry_computation->ReplaceInstruction(root, fusion_instruction));
@@ -486,7 +495,7 @@ StatusOr<std::unique_ptr<HloModule>> TritonGemmAutotuneExtractor(
   return new_module;
 }
 
-StatusOr<std::unique_ptr<HloModule>> CublasGemmAutotuneExtractor(
+absl::StatusOr<std::unique_ptr<HloModule>> CublasGemmAutotuneExtractor(
     const AutotuneConfig& config, const HloFusionInstruction* fusion,
     const DebugOptions& debug_opts) {
   const HloComputation* fusion_computation =
@@ -513,7 +522,7 @@ bool ShouldAllowFilteringKernelsSpillingRegisters(
   return gemm_config_set.configs.size() > 1;
 }
 
-StatusOr<absl::flat_hash_map<const HloFusionInstruction*, ExecutableSet>>
+absl::StatusOr<absl::flat_hash_map<const HloFusionInstruction*, ExecutableSet>>
 CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
             tsl::thread::ThreadPool* thread_pool,
             const DebugOptions& debug_opts,
@@ -552,9 +561,10 @@ CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
   };
 
   // Returns true on success.
-  auto compile =
-      [&](const HloFusionInstruction* fusion, const TritonGemmConfig& conf,
-          bool allow_filtering_kernels_spilling_registers) -> StatusOr<bool> {
+  auto compile = [&](const HloFusionInstruction* fusion,
+                     const TritonGemmConfig& conf,
+                     bool allow_filtering_kernels_spilling_registers)
+      -> absl::StatusOr<bool> {
     CHECK_LE(conf.block_m, kMaxTileSize);
     CHECK_LE(conf.block_n, kMaxTileSize);
     CHECK_LE(conf.block_k, kMaxTileSize);
@@ -582,7 +592,7 @@ CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
 
   // Returns true on success.
   auto compile_reference_executable =
-      [&](const HloFusionInstruction* fusion) -> StatusOr<bool> {
+      [&](const HloFusionInstruction* fusion) -> absl::StatusOr<bool> {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<Executable> executable,
                         util.Compile([&](const DebugOptions& opts) {
                           return CublasGemmAutotuneExtractor(config, fusion,
@@ -621,7 +631,7 @@ CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
 
       for (const TritonGemmConfig& conf : gemm_config_set.configs) {
         thread_pool->Schedule([&, fusion] {
-          StatusOr<bool> has_executable = compile(
+          absl::StatusOr<bool> has_executable = compile(
               fusion, conf,
               ShouldAllowFilteringKernelsSpillingRegisters(gemm_config_set));
           TF_CHECK_OK(has_executable.status())
@@ -635,7 +645,8 @@ CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
       }
 
       thread_pool->Schedule([&, fusion] {
-        StatusOr<bool> has_executable = compile_reference_executable(fusion);
+        absl::StatusOr<bool> has_executable =
+            compile_reference_executable(fusion);
         TF_CHECK_OK(has_executable.status());
         log(has_executable.value());
         counter.DecrementCount();
@@ -679,7 +690,7 @@ CompileMany(const AutotuneConfig& config, AutotunerCompileUtil& util,
 
 // Runs matmul fusion contents without Triton - with cuBLAS, to measure time and
 // generate a reference output.
-StatusOr<ProfilingOutput> RunMatmulWithCublas(
+absl::StatusOr<ProfilingOutput> RunMatmulWithCublas(
     AutotunerCompileUtil& util, se::Stream* stream, Executable& executable,
     absl::Span<se::DeviceMemoryBase const> input_buffers,
     absl::Span<Shape const> input_shapes) {
@@ -690,11 +701,11 @@ StatusOr<ProfilingOutput> RunMatmulWithCublas(
   return std::move(output.value());
 }
 
-StatusOr<AutotuneResult> Execute(const AutotuneConfig& config,
-                                 AutotunerCompileUtil& util,
-                                 const DebugOptions& debug_opts,
-                                 const HloFusionInstruction* fusion,
-                                 const ExecutableSet& executable_set) {
+absl::StatusOr<AutotuneResult> Execute(const AutotuneConfig& config,
+                                       AutotunerCompileUtil& util,
+                                       const DebugOptions& debug_opts,
+                                       const HloFusionInstruction* fusion,
+                                       const ExecutableSet& executable_set) {
   const HloComputation* fusion_computation =
       fusion->called_computations().at(0);
 
@@ -840,10 +851,11 @@ StatusOr<AutotuneResult> Execute(const AutotuneConfig& config,
   return best_triton;
 }
 
-Status DumpAutotunedFusion(const AutotuneConfig& config,
-                           AutotunerCompileUtil& util,
-                           const AutotuneResult result,
-                           const HloFusionInstruction* fusion, int fusion_id) {
+absl::Status DumpAutotunedFusion(const AutotuneConfig& config,
+                                 AutotunerCompileUtil& util,
+                                 const AutotuneResult result,
+                                 const HloFusionInstruction* fusion,
+                                 int fusion_id) {
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<HloModule> module,
       util.ExtractModule([&](const DebugOptions& debug_opts) {
@@ -866,11 +878,11 @@ Status DumpAutotunedFusion(const AutotuneConfig& config,
   return absl::OkStatus();
 }
 
-Status Autotune(const AutotuneConfig& config, AutotunerCompileUtil& util,
-                tsl::thread::ThreadPool* thread_pool,
-                const DebugOptions& debug_opts,
-                const absl::flat_hash_map<const HloFusionInstruction*,
-                                          GemmConfigSet>& gemm_config_sets) {
+absl::Status Autotune(
+    const AutotuneConfig& config, AutotunerCompileUtil& util,
+    tsl::thread::ThreadPool* thread_pool, const DebugOptions& debug_opts,
+    const absl::flat_hash_map<const HloFusionInstruction*, GemmConfigSet>&
+        gemm_config_sets) {
   absl::flat_hash_map<const HloFusionInstruction*, ExecutableSet>
       executable_sets;
   TF_ASSIGN_OR_RETURN(
@@ -948,7 +960,7 @@ std::vector<TritonGemmConfig> GetPossibleMatmulAutotuneConfigs(
                                         compute_capability, max_split_k));
 }
 
-StatusOr<bool> TritonAutotuner::Run(
+absl::StatusOr<bool> TritonAutotuner::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   XLA_SCOPED_LOGGING_TIMER("Triton autotuner");

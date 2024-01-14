@@ -36,3 +36,10 @@ if [[ "$TFCI_UPLOAD_LIB_ENABLE" == 1 ]]; then
     gsutil cp "$TFCI_OUTPUT_DIR"/*.tar.gz "$TFCI_UPLOAD_LIB_LATEST_GCS_URI"
   fi
 fi
+
+# TODO(angerson): Replace individual uploads (above) with this
+# shared output bucket
+if [[ "$TFCI_ARTIFACT_STAGING_GCS_ENABLE" == 1 ]]; then
+  # Note: -n disables overwriting previously created files.
+  gsutil cp "$TFCI_OUTPUT_DIR"/*.tar.gz "$TFCI_ARTIFACT_STAGING_GCS_URI"
+fi
