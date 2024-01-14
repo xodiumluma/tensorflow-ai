@@ -100,7 +100,7 @@ static std::vector<HloCustomCallInstruction*> GetRelevantConvs(
 // `sibling_computation`.
 //
 // Yes, we serialize/deserialize as a proto.  :)
-static StatusOr<HloComputation*> BuilderToHloComputation(
+static absl::StatusOr<HloComputation*> BuilderToHloComputation(
     XlaBuilder& b, XlaOp root, HloComputation* sibling_computation) {
   TF_ASSIGN_OR_RETURN(XlaComputation comp, b.Build(root));
   TF_ASSIGN_OR_RETURN(ProgramShape program_shape, comp.GetProgramShape());
@@ -281,7 +281,8 @@ static ConvolutionDimensionNumbers VectorizeDnums(
 // Reorders the convolution's filter and bias (if present) according to
 // cudnnReorderFilterAndBias.  Also marks that the filter + bias are reordered
 // in the conv's backend-config.
-Status ReorderInt8NchwVect(HloCustomCallInstruction* conv, XlaOp* operands) {
+absl::Status ReorderInt8NchwVect(HloCustomCallInstruction* conv,
+                                 XlaOp* operands) {
   bool has_bias = conv->operand_count() > 2;
   VLOG(1) << "Reordering filter" << (has_bias ? " and bias" : "")
           << " (replacement for cudnnReorderFilterAndBias)";
@@ -290,10 +291,12 @@ Status ReorderInt8NchwVect(HloCustomCallInstruction* conv, XlaOp* operands) {
   ConvolutionDimensionNumbers dnums = conv->convolution_dimension_numbers();
 
   // Update convolution backend config.
-  TF_ASSIGN_OR_RETURN(auto config,
-                      conv->backend_config<CudnnConvBackendConfig>());
+  TF_ASSIGN_OR_RETURN(GpuBackendConfig gpu_config,
+                      conv->backend_config<GpuBackendConfig>());
+  CudnnConvBackendConfig& config =
+      *gpu_config.mutable_cudnn_conv_backend_config();
   config.set_reordered_int8_nchw_vect(true);
-  TF_RETURN_IF_ERROR(conv->set_backend_config(config));
+  TF_RETURN_IF_ERROR(conv->set_backend_config(gpu_config));
 
   // Reorder the filter.
   TF_ASSIGN_OR_RETURN(Shape filter_shape, builder->GetShape(operands[1]));
@@ -331,7 +334,7 @@ Status ReorderInt8NchwVect(HloCustomCallInstruction* conv, XlaOp* operands) {
 //
 // (The dimensions can appear in any order; which is N/C/etc is determined by
 // the convolutions' dnums.)
-static StatusOr<bool> TryRevectorizeConv(
+static absl::StatusOr<bool> TryRevectorizeConv(
     const se::CudaComputeCapability& compute_capability,
     const se::dnn::VersionInfo& cudnn_version, HloCustomCallInstruction* conv,
     int vect_size) {
@@ -492,7 +495,7 @@ static StatusOr<bool> TryRevectorizeConv(
 //
 // This requires that C be a multiple of vect_size.  CudnnPadForConvolutions can
 // add padding to make this true.
-static StatusOr<bool> TryVectorizeConv(
+static absl::StatusOr<bool> TryVectorizeConv(
     const se::CudaComputeCapability& compute_capability,
     const se::dnn::VersionInfo& cudnn_version, HloCustomCallInstruction* conv,
     int64_t vect_size) {
@@ -612,7 +615,7 @@ static StatusOr<bool> TryVectorizeConv(
 
 }  // namespace
 
-StatusOr<bool> CudnnVectorizeConvolutions::Run(
+absl::StatusOr<bool> CudnnVectorizeConvolutions::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;

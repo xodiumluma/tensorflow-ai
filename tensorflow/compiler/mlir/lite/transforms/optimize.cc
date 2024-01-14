@@ -43,6 +43,7 @@ limitations under the License.
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -83,6 +84,19 @@ ElementsAttr FlattenTo1D(Attribute a) {
   const std::array<int64_t, 1> flattened_shape = {elements.getNumElements()};
   auto new_type = RankedTensorType::get(flattened_shape,
                                         elements.getType().getElementType());
+  return elements.reshape(new_type);
+}
+
+// This assumes that the bias is of shape NxCx1x1 and doesn't require transpose
+// Its corresponding constraint is optimize_patterns.td:IsBiasShape()
+ElementsAttr ReshapeNCHWBiasToNHWC(Value v, Attribute a) {
+  auto elements = a.cast<DenseElementsAttr>();
+  auto shape = v.getType().cast<ShapedType>().getShape();
+  if (shape.size() != 4 || shape[2] != 1 || shape[3] != 1) return elements;
+  const std::array<int64_t, 4> new_shape = {shape[0], shape[2], shape[3],
+                                            shape[1]};
+  auto new_type =
+      RankedTensorType::get(new_shape, elements.getType().getElementType());
   return elements.reshape(new_type);
 }
 
@@ -676,6 +690,18 @@ TypedAttr ConvertSingleElementAttrToFloatAttr(Attribute attr) {
       {llvm::APFloat(float_val)});
 }
 
+bool IsPermutationNCHW(Value perm) {
+  DenseIntElementsAttr perm_const;
+  if (!matchPattern(perm, m_Constant(&perm_const))) return false;
+
+  SmallVector<int64_t, 4> axes;
+  for (const auto &axis_int : perm_const.getValues<APInt>()) {
+    axes.push_back(axis_int.getSExtValue());
+  }
+
+  return (axes == SmallVector<int64_t>({0, 3, 1, 2}));
+}
+
 #include "tensorflow/compiler/mlir/lite/transforms/generated_optimize.inc"
 
 struct FuseAddAndStridedSlice : public OpRewritePattern<TFL::StridedSliceOp> {
@@ -1189,6 +1215,12 @@ struct FuseFullyConnectedAndReluX : public OpRewritePattern<ReluXOp> {
 };
 
 // Fuse Mul with proceeding FullyConnected.
+// Replace ..
+// Mul(FC(input, filter, bias), rhs)
+// .. with ..
+// FC(lhs, Mul(filter, rhs), bias)
+// .. if rhs, filter, and bias are all constants.
+// The generated Mul will be constant folded to a single matrix using TF::Mul.
 // TODO(b/136285429): Move to tablegen when variadic is supported
 struct FuseFullyConnectedAndMul : public OpRewritePattern<TFL::MulOp> {
   using OpRewritePattern<TFL::MulOp>::OpRewritePattern;
@@ -1242,6 +1274,14 @@ struct FuseFullyConnectedAndMul : public OpRewritePattern<TFL::MulOp> {
     // Rewrite. Since the folder of TFL::MulOp couldn't broadcast the operands,
     // TF::MulOp is used to fold the constant.
     // TODO(b/139192933): switch to the TFL constant folding
+    auto filter_type = filter.getType().cast<ShapedType>();
+    if (filter_type.hasStaticShape()) {
+      auto size =
+          filter_type.getNumElements() * filter_type.getElementTypeBitWidth();
+      // Don't constant fold if the filter is too large for TF to fold.
+      // tensorflow/compiler/mlir/tensorflow/transforms/constant_fold.cc
+      if (size > (1 << 30)) return failure();
+    }
     auto new_filter =
         rewriter.create<TF::MulOp>(mul_op.getLoc(), filter, new_const_val)
             .getZ();

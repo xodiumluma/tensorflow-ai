@@ -104,6 +104,18 @@ bool IsCommand<HloOpcode::kWhile>(const HloInstruction* hlo,
          IsCommand(hlo->while_condition(), config);
 }
 
+// Conditional can be executed inside command buffers only if all regions of its
+// branches can be executed as command buffers.
+template <>
+bool IsCommand<HloOpcode::kConditional>(const HloInstruction* hlo,
+                                        const CommandBufferConfig& config) {
+  return config.contains(DebugOptions::WHILE) &&
+         absl::c_all_of(hlo->branch_computations(),
+                        [&](const HloComputation* comp) {
+                          return IsCommand(comp, config);
+                        });
+}
+
 static bool IsCommand(const HloCustomCallInstruction* hlo,
                       const CommandBufferConfig& config) {
   return config.contains(DebugOptions::CUBLAS) && IsLegacyCublasMatmul(*hlo);
@@ -122,6 +134,9 @@ static bool IsCommand(const HloInstruction* hlo,
 
   if (hlo->opcode() == HloOpcode::kWhile)
     return IsCommand<HloOpcode::kWhile>(hlo, config);
+
+  if (hlo->opcode() == HloOpcode::kConditional)
+    return IsCommand<HloOpcode::kConditional>(hlo, config);
 
   return false;
 }
@@ -156,10 +171,11 @@ static bool IsAsyncStartCommand(const HloInstruction* hlo,
 // Finds an async-done HLO operation corresponding on an async-start one.
 static HloInstruction* FindAsyncDoneCommand(const HloInstruction* start) {
   if (start->opcode() == HloOpcode::kAllReduceStart ||
-      start->opcode() == HloOpcode::kAllGatherStart ||
-      start->opcode() == HloOpcode::kAsyncStart) {
+      start->opcode() == HloOpcode::kAllGatherStart) {
     CHECK(start->users().size() == 1);  // NOLINT, checked by HLO verifier
     return start->users().front();
+  } else if (start->opcode() == HloOpcode::kAsyncStart) {
+    return start->async_chain_done();
   }
 
   return nullptr;
@@ -266,7 +282,7 @@ CommandBufferScheduling::CollectCommandBufferSequences(
 // the beginning of the computation. This simplifies the construction of command
 // buffer computations because we don't need to deal with parameters and
 // constants that have users outside of a command buffer.
-Status CommandBufferScheduling::MoveParametersAndConstantsToFront(
+absl::Status CommandBufferScheduling::MoveParametersAndConstantsToFront(
     HloComputation* computation) {
   HloInstructionSequence new_sequence;
   HloSchedule& schedule = computation->parent()->schedule();
@@ -303,7 +319,7 @@ Status CommandBufferScheduling::MoveParametersAndConstantsToFront(
 // Prepares command buffer from sequence of instructions
 //===----------------------------------------------------------------------===//
 
-StatusOr<CommandBuffer> CommandBufferScheduling::PrepareCommandBuffer(
+absl::StatusOr<CommandBuffer> CommandBufferScheduling::PrepareCommandBuffer(
     const HloInstructionSequence& seq) {
   auto builder = HloComputation::Builder("command_buffer");
 
@@ -360,6 +376,12 @@ StatusOr<CommandBuffer> CommandBufferScheduling::PrepareCommandBuffer(
     // Cloned instructions should call the same computations as original
     // instructions will be dead code eliminated.
     for (HloComputation* called_computation : inst->called_computations()) {
+      // Async computations can only be referenced by a single async chain at
+      // a time. Detach the current chain to let its copy bind to the
+      // computation.
+      if (called_computation->IsAsyncComputation()) {
+        called_computation->RemoveAsyncStart();
+      }
       ctx.MapComputation(called_computation, called_computation);
     }
 
@@ -404,7 +426,7 @@ StatusOr<CommandBuffer> CommandBufferScheduling::PrepareCommandBuffer(
 // Rewrites original computation into command buffer call
 //===----------------------------------------------------------------------===//
 
-StatusOr<HloComputation*> CommandBufferScheduling::RewriteCommandBuffer(
+absl::StatusOr<HloComputation*> CommandBufferScheduling::RewriteCommandBuffer(
     HloComputation* parent, const HloInstructionSequence& seq,
     CommandBuffer command_buffer) {
   if (command_buffer.results.empty())
@@ -523,7 +545,7 @@ CommandBufferScheduling::CommandBufferScheduling(
       gpu_toolkit_version_(gpu_toolkit_version),
       gpu_driver_version_(gpu_driver_version) {}
 
-StatusOr<bool> CommandBufferScheduling::Run(
+absl::StatusOr<bool> CommandBufferScheduling::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   // We run command buffer scheduling after a regular scheduling to guarantee

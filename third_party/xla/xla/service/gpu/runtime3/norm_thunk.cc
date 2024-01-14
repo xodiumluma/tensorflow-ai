@@ -54,7 +54,7 @@ NormRunner& NormThunk::GetOrCreateRunner(
   return *it->second;
 }
 
-Status NormThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status NormThunk::ExecuteOnStream(const ExecuteParams& params) {
   const auto& buffer_allocations = *params.buffer_allocations;
 
   se::DeviceMemoryBase input_se_buffer =
@@ -89,7 +89,7 @@ Status NormThunk::ExecuteOnStream(const ExecuteParams& params) {
                                 scratch, params.stream, opts));
 
   if (!params.stream->ok()) {
-    return InternalError("NormThunk::ExecuteOnStream failed.");
+    return Internal("NormThunk::ExecuteOnStream failed.");
   }
   return absl::OkStatus();
 }

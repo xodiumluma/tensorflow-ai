@@ -52,7 +52,7 @@ class FusionInterface {
  public:
   virtual ~FusionInterface() = default;
 
-  virtual StatusOr<FusionEmissionResult> Emit(
+  virtual absl::StatusOr<FusionEmissionResult> Emit(
       IrEmitterContext& ir_emitter_context, mlir::lmhlo::FusionOp fusion_op,
       const HloFusionInstruction& fusion) const = 0;
 };
@@ -99,29 +99,30 @@ class KernelFusionInterface : public FusionInterface {
 // generated using LLVM.
 class KernelFusionEmitterBase : public KernelFusionInterface {
  public:
-  StatusOr<FusionEmissionResult> Emit(
+  absl::StatusOr<FusionEmissionResult> Emit(
       IrEmitterContext& ir_emitter_context, mlir::lmhlo::FusionOp fusion_op,
       const HloFusionInstruction& fusion) const final;
 
  protected:
   // Creates initializer thunks that need to run before the main kernel.
-  virtual StatusOr<FusionEmissionResult> EmitInitializers(
+  virtual absl::StatusOr<FusionEmissionResult> EmitInitializers(
       IrEmitterContext& ir_emitter_context, mlir::lmhlo::FusionOp fusion_op,
       const HloFusionInstruction& fusion) const {
     // No initializers by default.
     return FusionEmissionResult{};
   }
 
-  virtual Status EmitKernel(IrEmitterContext& ir_emitter_context,
-                            const HloFusionInstruction& fusion,
-                            const LaunchDimensions& launch_dims,
-                            std::vector<llvm_ir::IrArray> inputs,
-                            std::vector<llvm_ir::IrArray> outputs,
-                            llvm::IRBuilder<>* builder) const = 0;
+  virtual absl::Status EmitKernel(IrEmitterContext& ir_emitter_context,
+                                  const HloFusionInstruction& fusion,
+                                  const LaunchDimensions& launch_dims,
+                                  std::vector<llvm_ir::IrArray> inputs,
+                                  std::vector<llvm_ir::IrArray> outputs,
+                                  llvm::IRBuilder<>* builder) const = 0;
 };
 
-StatusOr<std::tuple<llvm::Function*, std::vector<llvm_ir::IrArray /*inputs*/>,
-                    std::vector<llvm_ir::IrArray> /*outputs*/>>
+absl::StatusOr<
+    std::tuple<llvm::Function*, std::vector<llvm_ir::IrArray /*inputs*/>,
+               std::vector<llvm_ir::IrArray> /*outputs*/>>
 BuildKernelPrototype(IrEmitterContext& ir_emitter_context,
                      const std::string& suggested_name,
                      absl::Span<const KernelArgument> arguments,

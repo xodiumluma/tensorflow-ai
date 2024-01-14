@@ -49,7 +49,7 @@ GenericConvRunner& ConvolutionThunk::GetOrCreateRunner(
   return *it->second;
 }
 
-Status ConvolutionThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status ConvolutionThunk::ExecuteOnStream(const ExecuteParams& params) {
   const auto& buffer_allocations = *params.buffer_allocations;
 
   std::vector<se::DeviceMemoryBase> operand_se_buffers, result_se_buffers;
@@ -76,7 +76,7 @@ Status ConvolutionThunk::ExecuteOnStream(const ExecuteParams& params) {
   // Note: Convolution has a tuple buffer as an output, but we don't need to
   // populate it as no one should be reading from the tuple directly.
   if (!params.stream->ok()) {
-    return InternalError("ConvolutionThunk::ExecuteOnStream failed.");
+    return Internal("ConvolutionThunk::ExecuteOnStream failed.");
   }
   return absl::OkStatus();
 }
@@ -90,7 +90,8 @@ ConvolutionReorderThunk::ConvolutionReorderThunk(
       operand_buffers_(std::move(operand_slices)),
       result_buffers_(std::move(result_slices)) {}
 
-Status ConvolutionReorderThunk::ExecuteOnStream(const ExecuteParams& params) {
+absl::Status ConvolutionReorderThunk::ExecuteOnStream(
+    const ExecuteParams& params) {
   bool has_bias = operand_buffers_.size() > 1;
   CHECK_EQ(operand_buffers_.size(), result_buffers_.size());
 
@@ -114,7 +115,7 @@ Status ConvolutionReorderThunk::ExecuteOnStream(const ExecuteParams& params) {
       std::move(bias_output)));
 
   if (!params.stream->ok()) {
-    return InternalError("ConvolutionReorderThunk::ExecuteOnStream failed.");
+    return Internal("ConvolutionReorderThunk::ExecuteOnStream failed.");
   }
   return absl::OkStatus();
 }

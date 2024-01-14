@@ -17,6 +17,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "xla/executable_run_options.h"
 #include "xla/service/collective_ops_utils.h"
@@ -35,36 +36,37 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-StatusOr<NcclComm::Lock> AcquireMockNcclComm(
-    ncclComm_t local_comm, RunId run_id, OpId op_id,
-    std::vector<GlobalDeviceId> participants,
+absl::StatusOr<NcclComm::Lock> AcquireMockNcclComm(
+    RunId run_id, OpId op_id, std::vector<GlobalDeviceId> participants,
     std::vector<GlobalDeviceId> local_devices, size_t num_local_participants,
     const NcclUniqueIdCallback& unique_id_callback, int rank, int64_t stream_id,
-    bool enable_clique_optimization) {
+    bool enable_clique_optimization,
+    GpuExecutableRunOptions::MockNcclTopoModel topo_model) {
   return Unimplemented("AcquireMockNcclComm is not implemented.");
 }
 
-StatusOr<NcclComm::Lock> LockMockNcclComm(
+absl::StatusOr<NcclComm::Lock> LockMockNcclComm(
     const NcclExecuteParams& params,
     const std::vector<ReplicaGroup>& replica_groups,
     CollectiveOpGroupMode group_mode, int64_t op_id, int64_t stream_id,
-    bool enable_clique_optimization) {
+    bool enable_clique_optimization,
+    GpuExecutableRunOptions::MockNcclTopoModel topo_model) {
   return Unimplemented("LockMockNcclComm is not implemented.");
 }
 
-Status RunMockNcclCollectives(std::vector<DeviceBufferPair>& buffers,
-                              se::Stream& stream, ncclComm_t mock_comm,
-                              Thunk::Kind reduce_op) {
+absl::Status RunMockNcclCollectives(std::vector<DeviceBufferPair>& buffers,
+                                    se::Stream& stream, ncclComm_t mock_comm,
+                                    Thunk::Kind reduce_op) {
   return Unimplemented("Mock nccl collectives is not implemented.");
 }
 
-Status RunMockNcclAllToAll(bool has_split_dimension,
-                           std::vector<DeviceBufferPair>& buffers,
-                           se::Stream& stream, ncclComm_t mock_comm) {
+absl::Status RunMockNcclAllToAll(bool has_split_dimension,
+                                 std::vector<DeviceBufferPair>& buffers,
+                                 se::Stream& stream, ncclComm_t mock_comm) {
   return Unimplemented("Mock nccl AllToAll is not implemented.");
 }
 
-Status RunMockCollectivePermute(
+absl::Status RunMockCollectivePermute(
     NcclP2PConfig::SourceTargetMapEntry source_target, DeviceBufferPair& buffer,
     se::Stream& stream, ncclComm_t mock_comm, absl::string_view device_string,
     int64_t current_id) {

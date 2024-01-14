@@ -19,9 +19,11 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/ir_emission_utils.h"
@@ -35,7 +37,7 @@ namespace xla {
 namespace gpu {
 
 class EnforceMinorToMajorReduceOpVisitor : public DfsHloRewriteVisitor {
-  Status HandleReduce(HloInstruction *hlo) override {
+  absl::Status HandleReduce(HloInstruction *hlo) override {
     auto reduce = Cast<HloReduceInstruction>(hlo);
     VLOG(5) << "Input: " << reduce->ToString();
 
@@ -179,7 +181,7 @@ class EnforceMinorToMajorReduceOpVisitor : public DfsHloRewriteVisitor {
   }
 };
 
-StatusOr<bool> ReductionLayoutNormalizer::Run(
+absl::StatusOr<bool> ReductionLayoutNormalizer::Run(
     HloModule *module,
     const absl::flat_hash_set<absl::string_view> &execution_threads) {
   TF_ASSIGN_OR_RETURN(bool changed,

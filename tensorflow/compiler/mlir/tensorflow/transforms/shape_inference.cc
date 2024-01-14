@@ -37,6 +37,7 @@ limitations under the License.
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"  // from @llvm-project
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
@@ -1199,6 +1200,8 @@ bool ShapeInference::InferShapeForCaseRegion(CaseRegionOp op) {
 }
 
 bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
+  if (!llvm::any_of(op.getResultTypes(), CanBeRefined)) return false;
+
   tensorflow::XlaCallModuleLoader* loader;
   if (auto it = xla_call_module_loaders_.find(op);
       it != xla_call_module_loaders_.end()) {
@@ -1215,11 +1218,6 @@ bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
     for (auto attr : op.getPlatforms().getAsRange<StringAttr>()) {
       platforms.push_back(attr.getValue().str());
     }
-    // Always use the first platform. The assumption is that shape inference
-    // results should be the same regardless of which platform is chosen.
-    // Very old versions of the op have an empty platforms attribute.
-    std::string loading_platform =
-        (platforms.empty() ? "CPU" : platforms.front());
 
     // It is a terrible idea to have local MLIR contexts so we need to
     // register extensions here, again.
@@ -1231,12 +1229,11 @@ bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
     auto l = tensorflow::XlaCallModuleLoader::Create(
         &xla_call_module_context_, op.getVersion(), op.getModule().str(),
         std::move(disabled_checks), std::move(platforms),
-        std::move(loading_platform),
         /*num_invocation_args=*/op.getArgs().size(),
         op.getHasTokenInputOutput());
     if (!l.ok()) {
-      LLVM_DEBUG(llvm::dbgs() << "Parsing error in XlaCallModule: "
-                              << l.status().ToString() << "\n");
+      llvm::errs() << "Parsing error in XlaCallModule: "
+                   << l.status().ToString() << "\n";
       return false;
     }
 
@@ -1255,8 +1252,10 @@ bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
 
   tsl::Status status = loader->RefineDynamicShapes(input_shapes);
   if (!status.ok()) {
-    LLVM_DEBUG(llvm::dbgs() << "Failed during XlaCallModule shape refinement: "
-                            << status.ToString());
+    llvm::errs() << "Failed during XlaCallModule shape refinement: "
+                 << status.ToString();
+    // Do not return false here.
+    //
     // RefineDynamicShapes returns ok only when it produces full static shapes.
     // It may partially succeed by producing RankedTensor shapes with dynamic
     // dimensions. Such info is still useful for the downstream. We don't need
@@ -1264,21 +1263,34 @@ bool ShapeInference::InferShapeForXlaCallModule(XlaCallModuleOp op) {
     // TODO(b/316639984): improve RefineDynamicShapes return values to include
     // these info.
   }
-
+  mlir::ResultRange op_results = op.getResults();
+  // The main_outputs may include tokens that are not among the op_results;
+  mlir::TypeRange main_output_types = loader->OutputTypes();
+  int nr_main_token_outputs =
+      llvm::count_if(main_output_types, tensorflow::IsTokenType);
+  if (op_results.size() != main_output_types.size() - nr_main_token_outputs) {
+    llvm::errs() << "XlaCallModule has " << op_results.size()
+                 << " but the main function has "
+                 << main_output_types.size() - nr_main_token_outputs
+                 << " non-token ouputs";
+    return false;
+  }
   bool changed = false;
-  for (auto [result, type] :
-       llvm::zip(op.getResults(), loader->OutputTypes())) {
-    auto ranked = type.dyn_cast<RankedTensorType>();
-    if (ranked == nullptr) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "Unsupported XlaCallModule result type: " << type);
-      continue;
+  int next_op_result = 0;
+  for (auto output_type : main_output_types) {
+    if (tensorflow::IsTokenType(output_type)) continue;
+    auto output_type_ranked = output_type.dyn_cast<RankedTensorType>();
+    if (output_type_ranked == nullptr) {
+      llvm::errs() << "Unsupported XlaCallModule result type: " << output_type
+                   << "\n";
+      return false;
     }
+    auto result = op_results[next_op_result++];
 
     // Build a new type object from `type` and `elem_type`. `type` is owned by
     // `xla_call_module_context_` and should not be mixed with op's context.
     auto new_type = RankedTensorType::get(
-        ranked.getShape(), getElementTypeOrSelf(result.getType()));
+        output_type_ranked.getShape(), getElementTypeOrSelf(result.getType()));
 
     changed = RefineResultType(op, result, new_type) || changed;
   }

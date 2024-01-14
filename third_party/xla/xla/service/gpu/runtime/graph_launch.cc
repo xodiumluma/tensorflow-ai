@@ -280,7 +280,7 @@ bool GraphInstances::InstantiatedAllGraphs(
   return impl_->graphs[run_options->stream()->parent()].instantiated;
 }
 
-Status GraphInstances::InstantiateAllGraphs(
+absl::Status GraphInstances::InstantiateAllGraphs(
     const ServiceExecutableRunOptions* run_options,
     const Executable& executable, const CustomCall::UserData& user_data,
     const BufferAllocations& buffer_allocations,
@@ -473,7 +473,7 @@ static absl::StatusOr<OwnedGpuGraph> CaptureGraph(
     }
   }
 
-  StatusOr<StreamPool::Ptr> capture_stream =
+  absl::StatusOr<StreamPool::Ptr> capture_stream =
       run_options->BorrowStream(executor->device_ordinal());
 
   if (!capture_stream.ok())
