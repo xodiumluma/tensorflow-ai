@@ -31,7 +31,7 @@
 #   dbg:                        Debug info build
 #
 # TF versions         
-#   v2          Build v2
+#   v2:                         Build v2
 #
 # Feature and 3rd party lib support options         
 #   xla:                        Build XLA-enabled TF
@@ -125,6 +125,20 @@ build --experimental_cc_shared_library
 
 # cc_shared_library checks that libraries linked statically are done at most once
 build --experimental_link_static_libraries_once=false
+
+# Avoid regressions for the two incompatible changes
+# @todo - remove flags when they are flipped in the default Bazel version (that TF uses)
+build --incompatible_enforce_config_setting_visibility
+# @todo - turn on this flag after addressing visibility violations
+# build --incompatible_config_setting_private_default_visibility
+
+# ------------------------ no more default configuration below this line ---------------------------
+# here's the android configuration
+# Bazel needs --cpu & --fat_apk_cpu to be set to the target CPU for correct building of transient dependencies
+# https://docs.bazel.build/versions/master/user-manual.html#flag--fat_apk_cpu
+build:android --crosstool_top=//external:android/crosstool
+build:android --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+build:android_arm --config=android
 
 
 
