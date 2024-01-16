@@ -13,26 +13,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/service/gpu/model/indexing_map_simplifier.h"
+#include "xla/service/gpu/model/indexing_map.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <ostream>
+#include <sstream>
 #include <string>
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/types/span.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "xla/service/gpu/model/affine_map_printer.h"
 
 namespace xla {
 namespace gpu {
 namespace {
 
 using mlir::AffineBinaryOpExpr;
+using mlir::AffineConstantExpr;
 using mlir::AffineDimExpr;
 using mlir::AffineExpr;
 using mlir::AffineExprKind;
@@ -47,6 +53,130 @@ int64_t FloorDiv(int64_t dividend, int64_t divisor) {
 }
 
 }  // namespace
+
+std::string Range::ToString() const {
+  std::string s;
+  std::stringstream ss(s);
+  Print(ss);
+  return ss.str();
+}
+
+void Range::Print(std::ostream& out) const {
+  out << '[' << lower_bound << ", " << upper_bound << ")";
+}
+
+std::ostream& operator<<(std::ostream& out, const Range& range) {
+  range.Print(out);
+  return out;
+}
+
+bool operator==(const Range& lhs, const Range& rhs) {
+  return lhs.lower_bound == rhs.lower_bound &&
+         lhs.upper_bound == rhs.upper_bound;
+}
+
+Domain Domain::FromUpperBounds(absl::Span<const int64_t> dimension_upper_bounds,
+                               absl::Span<const int64_t> symbol_upper_bounds) {
+  Domain domain;
+  domain.dimension_ranges.reserve(dimension_upper_bounds.size());
+  for (int64_t ub : dimension_upper_bounds) {
+    CHECK_GT(ub, 0);
+    domain.dimension_ranges.push_back({.lower_bound = 0, .upper_bound = ub});
+  }
+  domain.symbol_ranges.reserve(symbol_upper_bounds.size());
+  for (int64_t ub : symbol_upper_bounds) {
+    CHECK_GT(ub, 0);
+    domain.symbol_ranges.push_back({.lower_bound = 0, .upper_bound = ub});
+  }
+  return domain;
+}
+
+std::string Domain::ToString(const AffineMapPrinter& printer) const {
+  std::string s;
+  std::stringstream ss(s);
+  Print(ss, printer);
+  return ss.str();
+}
+
+void Domain::Print(std::ostream& out, const AffineMapPrinter& printer) const {
+  for (const auto& [index, range] : llvm::enumerate(dimension_ranges)) {
+    out << printer.GetDimensionName(index) << " in " << range << '\n';
+  }
+  for (const auto& [index, range] : llvm::enumerate(symbol_ranges)) {
+    out << printer.GetSymbolName(index) << " in " << range << '\n';
+  }
+}
+
+std::ostream& operator<<(std::ostream& out, const Domain& domain) {
+  AffineMapPrinter printer;
+  domain.Print(out, printer);
+  return out;
+}
+
+bool operator==(const Domain& lhs, const Domain& rhs) {
+  return lhs.dimension_ranges == rhs.dimension_ranges &&
+         lhs.symbol_ranges == rhs.symbol_ranges;
+}
+
+std::string IndexingMap::ToString(const AffineMapPrinter& printer) const {
+  std::string s;
+  std::stringstream ss(s);
+  Print(ss, printer);
+  return ss.str();
+}
+
+void IndexingMap::Print(std::ostream& out,
+                        const AffineMapPrinter& printer) const {
+  printer.Print(out, affine_map);
+  out << " with domain\n";
+  domain.Print(out, printer);
+  out << "\n";
+}
+
+std::ostream& operator<<(std::ostream& out, const IndexingMap& indexing_map) {
+  AffineMapPrinter printer;
+  indexing_map.Print(out, printer);
+  return out;
+}
+
+bool operator==(const IndexingMap& lhs, const IndexingMap& rhs) {
+  return lhs.affine_map == rhs.affine_map && lhs.domain == rhs.domain;
+}
+
+bool IndexingMap::Simplify() {
+  AffineMap simplified_affine_map =
+      IndexingMapSimplifier::FromIndexingMap(*this).Simplify(affine_map);
+  if (simplified_affine_map == affine_map) {
+    return false;
+  }
+  affine_map = simplified_affine_map;
+  return true;
+}
+
+IndexingMapSimplifier IndexingMapSimplifier::FromIndexingMap(
+    const IndexingMap& indexing_map) {
+  mlir::MLIRContext* mlir_context = indexing_map.affine_map.getContext();
+  IndexingMapSimplifier simplifier(mlir_context);
+
+  const Domain& domain = indexing_map.domain;
+  for (const auto& [index, range] : llvm::enumerate(domain.dimension_ranges)) {
+    simplifier.SetInclusiveBounds(getAffineDimExpr(index, mlir_context),
+                                  range.lower_bound, range.upper_bound - 1);
+  }
+  for (const auto& [index, range] : llvm::enumerate(domain.symbol_ranges)) {
+    simplifier.SetInclusiveBounds(getAffineSymbolExpr(index, mlir_context),
+                                  range.lower_bound, range.upper_bound - 1);
+  }
+  return simplifier;
+}
+
+bool IndexingMapSimplifier::IsAlwaysPositiveOrZero(mlir::AffineExpr expr) {
+  return GetInclusiveBounds(expr).lower >= 0;
+}
+
+bool IndexingMapSimplifier::IsAlwaysNegativeOrZero(mlir::AffineExpr expr) {
+  return GetInclusiveBounds(expr).upper <= 0;
+}
 
 void IndexingMapSimplifier::SetInclusiveBounds(AffineExpr expr, int64_t lower,
                                                int64_t upper) {
@@ -143,7 +273,7 @@ AffineExpr IndexingMapSimplifier::RewriteMod(AffineBinaryOpExpr mod) {
     return getAffineConstantExpr(0, mlir_context_);
   }
   // Otherwise, return new_sum % m.
-  return getAffineBinaryOpExpr(AffineExprKind::Mod, new_lhs, mod.getRHS());
+  return new_lhs % mod.getRHS();
 }
 
 AffineExpr IndexingMapSimplifier::RewriteFloorDiv(AffineBinaryOpExpr div) {
@@ -173,11 +303,8 @@ AffineExpr IndexingMapSimplifier::RewriteFloorDiv(AffineBinaryOpExpr div) {
       // one x, but we currently have no reason to do that.
       if (*multiplier % d != 0) return true;
       int64_t factor = *multiplier / d;
-      extracted = getAffineBinaryOpExpr(
-          AffineExprKind::Add, extracted,
-          getAffineBinaryOpExpr(AffineExprKind::Mul,
-                                mlir::cast<AffineBinaryOpExpr>(expr).getLHS(),
-                                getAffineConstantExpr(factor, mlir_context_)));
+      extracted =
+          extracted + mlir::cast<AffineBinaryOpExpr>(expr).getLHS() * factor;
       // Remove from dividend.
       return false;
     }
@@ -194,10 +321,7 @@ AffineExpr IndexingMapSimplifier::RewriteFloorDiv(AffineBinaryOpExpr div) {
     return div;
   }
 
-  return getAffineBinaryOpExpr(
-      AffineExprKind::Add, extracted,
-      getAffineBinaryOpExpr(AffineExprKind::FloorDiv, new_dividend,
-                            div.getRHS()));
+  return extracted + new_dividend.floorDiv(div.getRHS());
 }
 
 std::optional<int64_t> IndexingMapSimplifier::GetConstantRhsMultiplier(
@@ -219,7 +343,7 @@ AffineExpr IndexingMapSimplifier::RewriteSumIf(
       return add;
     }
     if (lhs && rhs) {
-      return getAffineBinaryOpExpr(AffineExprKind::Add, lhs, rhs);
+      return lhs + rhs;
     }
     return lhs ? lhs : (rhs ? rhs : nullptr);
   }
