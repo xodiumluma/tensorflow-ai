@@ -1316,19 +1316,6 @@ struct BitPatternToValue {
       << "Feature not supported on ROCm platform (UnifiedMemoryDeallocate)";
 }
 
-/* static */ absl::StatusOr<void*> GpuDriver::CollectiveMemoryAllocate(
-    GpuContext* context, uint64_t bytes) {
-  ScopedActivateContext activated{context};
-  return absl::UnimplementedError(
-      "Feature not supported on ROCm platform (CollectiveMemoryAllocate)");
-}
-
-/* static */ absl::Status GpuDriver::CollectiveMemoryDeallocate(
-    GpuContext* context, void* location) {
-  return absl::UnimplementedError(
-      "Feature not supported on ROCm platform (CollectiveMemoryDeallocate)");
-}
-
 /* static */ void* GpuDriver::HostAllocate(GpuContext* context,
                                            uint64_t bytes) {
   ScopedActivateContext activation{context};
@@ -2105,21 +2092,27 @@ static absl::StatusOr<T> GetSimpleAttribute(hipDevice_t device,
   ScopedActivateContext activation{context};
 
   int max_blocks = 0;
-  hipError_t result = hipSuccess;
-  // TODO(ROCm) implement this feature in HIP
-  if (result != hipSuccess) {
-    return absl::Status{
-        absl::StatusCode::kInternal,
-        absl::StrFormat("failed to calculate occupancy of kernel %p: %s",
-                        kernel, ToString(result).c_str())};
-  }
-
+  RETURN_IF_ROCM_ERROR(
+      wrap::hipModuleOccupancyMaxActiveBlocksPerMultiprocessor(
+          &max_blocks, kernel, threads_per_block, dynamic_shared_memory_bytes),
+      "Failed to calculate maximal active blocks per SM");
   return max_blocks;
 }
 
 }  // namespace gpu
 
 namespace rocm {
+
+absl::Status OccupancyGetMaxPotentialBlockSize(int* gridSize, int* blockSize,
+                                               hipFunction_t kernel,
+                                               size_t dynSharedMemPerBlk,
+                                               int blockSizeLimit) {
+  RETURN_IF_ROCM_ERROR(
+      wrap::hipModuleOccupancyMaxPotentialBlockSize(
+          gridSize, blockSize, kernel, dynSharedMemPerBlk, blockSizeLimit),
+      "Failed to calculate maximal potential block size");
+  return absl::OkStatus();
+}
 
 hipCtx_t CurrentContextOrDie() {
   hipCtx_t current = nullptr;
