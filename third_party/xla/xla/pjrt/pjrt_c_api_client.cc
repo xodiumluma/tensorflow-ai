@@ -44,6 +44,7 @@ limitations under the License.
 #include "mlir/Dialect/MLProgram/IR/MLProgram.h"  // from @llvm-project
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
 #include "mlir/IR/DialectRegistry.h"  // from @llvm-project
+#include "mlir/IR/OwningOpRef.h"  // from @llvm-project
 #include "mlir/Parser/Parser.h"  // from @llvm-project
 #include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
@@ -58,6 +59,7 @@ limitations under the License.
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/compile_options.pb.h"
 #include "xla/pjrt/distributed/key_value_store_interface.h"
+#include "xla/pjrt/mlir_to_hlo.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
@@ -382,16 +384,8 @@ StatusOr<std::unique_ptr<PjRtLoadedExecutable>> PjRtCApiClient::Compile(
 
 StatusOr<std::unique_ptr<PjRtLoadedExecutable>> PjRtCApiClient::Compile(
     mlir::ModuleOp module, CompileOptions options) {
-  std::string module_bytecode;
-  {
-    llvm::raw_string_ostream os(module_bytecode);
-    mlir::BytecodeWriterConfig config;
-    // Pin bytecode version to 1 until transition to stable.
-    // TODO(285913864): Remove post enabling frameworks to set it.
-    config.setDesiredBytecodeVersion(1);
-    if (mlir::failed(mlir::writeBytecodeToFile(module, os, config)))
-      return absl::UnknownError("writeBytecodeToFile() failed.");
-  }
+  TF_ASSIGN_OR_RETURN(  // NOLINT(clang-diagnostic-pre-c++20-compat)
+      const std::string module_bytecode, SerializeModule(module));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompile(this, c_api_, c_client_.get(), options,
                                   module_bytecode, format);
@@ -1058,7 +1052,7 @@ PjRtCApiExecutable::GetHloModules() const {
   absl::string_view program_format(program.format, program.format_size);
   if (program_format != ::pjrt::kHloWithConfigFormat &&
       program_format != ::pjrt::kMlirFormat) {
-    return xla::InternalError(
+    return xla::Internal(
         "expected program format `hlo_with_config` or `mlir` but got %s",
         program_format);
   }
@@ -1066,19 +1060,13 @@ PjRtCApiExecutable::GetHloModules() const {
   if (program_format == ::pjrt::kMlirFormat) {
     xla::HloProto hlo_proto;
     mlir::MLIRContext ctx;
-    mlir::DialectRegistry registry;
-    registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                    mlir::ml_program::MLProgramDialect,
-                    mlir::shape::ShapeDialect>();
-    mlir::stablehlo::registerAllDialects(registry);
-    mlir::mhlo::registerAllMhloDialects(registry);
-    ctx.appendDialectRegistry(registry);
-    auto module = mlir::parseSourceString<mlir::ModuleOp>(code, &ctx);
-    if (!module) return xla::InternalError("failed to parse source module");
+    TF_ASSIGN_OR_RETURN(  // NOLINT(clang-diagnostic-pre-c++20-compat)
+        mlir::OwningOpRef<mlir::ModuleOp> module,
+        ParseMlirModuleString(code, ctx));
     mlir::PassManager pm(&ctx);
     pm.addPass(mlir::mhlo::createStablehloLegalizeToHloPass());
     if (mlir::failed(pm.run(module.get())))
-      return xla::InternalError("failed to convert to MHLO");
+      return xla::Internal("failed to convert to MHLO");
     mlir::MlirToHloConversionOptions options;
     // TODO(jieying): Tuple args should really come from GetCompileOptions (or
     // equivalent) once implemented.
@@ -2180,16 +2168,8 @@ StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCApiCompiler::Compile(
 StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCApiCompiler::Compile(
     CompileOptions options, mlir::ModuleOp module,
     const PjRtTopologyDescription& topology, PjRtClient* client) {
-  std::string module_bytecode;
-  {
-    llvm::raw_string_ostream os(module_bytecode);
-    mlir::BytecodeWriterConfig config;
-    // Pin bytecode version to 1 until transition to stable.
-    // TODO(285913864): Remove post enabling frameworks to set it.
-    config.setDesiredBytecodeVersion(1);
-    if (mlir::failed(mlir::writeBytecodeToFile(module, os, config)))
-      return absl::UnknownError("writeBytecodeToFile() failed.");
-  }
+  TF_ASSIGN_OR_RETURN(  // NOLINT(clang-diagnostic-pre-c++20-compat)
+      const std::string module_bytecode, SerializeModule(module));
   std::string format(pjrt::kMlirFormat);
   return InitializeArgsAndCompileAot(c_api_, client, options, topology,
                                      module_bytecode, format);
@@ -2203,7 +2183,7 @@ StatusOr<std::unique_ptr<PjRtClient>> GetCApiClient(
     std::shared_ptr<KeyValueStoreInterface> kv_store) {
   TF_ASSIGN_OR_RETURN(const PJRT_Api* c_api, pjrt::PjrtApi(device_type));
   if (c_api == nullptr) {
-    return InternalError("PJRT C API is nullptr for %s", device_type);
+    return Internal("PJRT C API is nullptr for %s", device_type);
   }
 
   PJRT_Client_Create_Args init_args;
@@ -2237,7 +2217,7 @@ StatusOr<std::unique_ptr<PjRtTopologyDescription>> GetCApiTopology(
     const absl::flat_hash_map<std::string, PjRtValueType>& create_options) {
   TF_ASSIGN_OR_RETURN(const PJRT_Api* c_api, pjrt::PjrtApi(device_type));
   if (c_api == nullptr) {
-    return InternalError("PJRT C API is nullptr for %s", device_type);
+    return Internal("PJRT C API is nullptr for %s", device_type);
   }
 
   PJRT_TopologyDescription_Create_Args init_args;

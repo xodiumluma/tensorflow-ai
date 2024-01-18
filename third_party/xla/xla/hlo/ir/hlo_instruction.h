@@ -1922,15 +1922,6 @@ class HloInstruction {
   bool is_default_config() const { return is_default_config_; }
   void set_default_config() { is_default_config_ = true; }
 
-  void set_operation_queue_id(int64_t operation_queue_id) {
-    operation_queue_id_ = operation_queue_id;
-  }
-
-  std::optional<int64_t> operation_queue_id() const {
-    if (operation_queue_id_ == -1) return std::nullopt;
-    return operation_queue_id_;
-  }
-
   // Returns a string representation of a proto in the format used by
   // raw_backend_config_string.
   //
@@ -2465,6 +2456,9 @@ class HloInstruction {
   // Rare is allocated lazily, only when any of its constituent fields are
   // non-empty.  This reduces the memory footprint of HloInstruction objects.
   struct Rare {
+    // Computations called by this instruction.
+    PtrVec<HloComputation*> called_computations;
+
     // The set of control predecessors of this instruction.
     // Note that the order of the instructions in the vector influences the
     // order computed in HloComputation::ComputeInstructionPostOrder, which may
@@ -2474,9 +2468,6 @@ class HloInstruction {
 
     // The set of control successors of this instruction.
     PtrVec<HloInstruction*> control_successors;
-
-    // Computations called by this instruction.
-    PtrVec<HloComputation*> called_computations;
 
     // Attributes passed from the frontend to give hints to the backend about
     // how to compile this HLO.
@@ -2600,9 +2591,6 @@ class HloInstruction {
 
   // String identifier for instruction.
   std::string name_;
-
-  // ID of the operation queue to run this instruction.
-  int64_t operation_queue_id_ = -1;
 
   // Metadata for debugging.  Allocate it on heap, so that it does not increase
   // the memory footprint of HloInstruction.
