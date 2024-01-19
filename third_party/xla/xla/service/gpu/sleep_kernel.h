@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,20 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/service/gpu/mock_nccl_sleep_kernel.h"
+#ifndef XLA_SERVICE_GPU_SLEEP_KERNEL_H_
+#define XLA_SERVICE_GPU_SLEEP_KERNEL_H_
 
 namespace xla::gpu {
-namespace {
 
-// Use busy waiting instead of __nanosleep() to make the code more portable
-// (__nanosleep requires __CUDA_ARCH__ >= 700)
-__global__ void mock_nccl_call(int64_t num_clocks) {
-  int64_t start = clock64();
-  while (clock64() - start < num_clocks) continue;
-}
-
-}  // namespace
-
-void* GetSleepKernel() { return reinterpret_cast<void*>(&mock_nccl_call); }
+// Returns a pointer to CUDA kernel that does sleep operation on device.
+void* GetSleepKernel();
 
 }  // namespace xla::gpu
+
+#endif  // XLA_SERVICE_GPU_SLEEP_KERNEL_H_

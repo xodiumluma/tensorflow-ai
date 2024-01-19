@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2019 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,6 +46,7 @@ class NcclAllReduceReduceScatterThunkBase : public NcclCollectiveThunk {
       mlir::Region& computation);
 
   NcclAllReduceReduceScatterThunkBase(Kind kind, ThunkInfo thunk_info,
+                                      const NcclApi* nccl_api,
                                       NcclAllReduceConfig config,
                                       std::vector<Buffer> buffers,
                                       bool is_sync);
@@ -66,11 +67,11 @@ class NcclAllReduceReduceScatterThunkBase : public NcclCollectiveThunk {
 
 class NcclAllReduceStartThunk : public NcclAllReduceReduceScatterThunkBase {
  public:
-  NcclAllReduceStartThunk(ThunkInfo thunk_info,
+  NcclAllReduceStartThunk(ThunkInfo thunk_info, const NcclApi* nccl_api,
                           mlir::lmhlo_gpu::AllReduceStartOp op,
                           std::vector<Buffer> buffers);
 
-  NcclAllReduceStartThunk(ThunkInfo thunk_info,
+  NcclAllReduceStartThunk(ThunkInfo thunk_info, const NcclApi* nccl_api,
                           const HloAllReduceInstruction* inst,
                           std::vector<Buffer> buffers);
 
@@ -92,7 +93,8 @@ class NcclAllReduceStartThunk : public NcclAllReduceReduceScatterThunkBase {
 
  protected:
   absl::Status RunNcclCollective(const ExecuteParams& params,
-                                 se::Stream& stream, ncclComm_t comm) override;
+                                 se::Stream& stream,
+                                 NcclApi::NcclCommHandle comm) override;
 };
 
 // -----------------------------------------------------------------------------
@@ -100,11 +102,11 @@ class NcclAllReduceStartThunk : public NcclAllReduceReduceScatterThunkBase {
 // -----------------------------------------------------------------------------
 class NcclReduceScatterStartThunk : public NcclAllReduceReduceScatterThunkBase {
  public:
-  NcclReduceScatterStartThunk(ThunkInfo thunk_info,
+  NcclReduceScatterStartThunk(ThunkInfo thunk_info, const NcclApi* nccl_api,
                               mlir::lmhlo_gpu::ReduceScatterStartOp op,
                               std::vector<Buffer> buffers);
 
-  NcclReduceScatterStartThunk(ThunkInfo thunk_info,
+  NcclReduceScatterStartThunk(ThunkInfo thunk_info, const NcclApi* nccl_api,
                               const HloReduceScatterInstruction* inst,
                               std::vector<Buffer> buffers);
 
@@ -126,32 +128,19 @@ class NcclReduceScatterStartThunk : public NcclAllReduceReduceScatterThunkBase {
 
  protected:
   absl::Status RunNcclCollective(const ExecuteParams& params,
-                                 se::Stream& stream, ncclComm_t comm) override;
+                                 se::Stream& stream,
+                                 NcclApi::NcclCommHandle comm) override;
 };
 
 // -----------------------------------------------------------------------------
 
 absl::Status RunAllReduce(ReductionKind reduction_kind,
                           std::vector<DeviceBufferPair>& buffers,
-                          se::Stream& stream, ncclComm_t comm);
-
-inline absl::Status RunAllReduce(ReductionKind reduction_kind,
-                                 std::vector<DeviceBufferPair>& buffers,
-                                 se::Stream& stream, NcclCommHandle comm) {
-  return RunAllReduce(reduction_kind, buffers, stream,
-                      reinterpret_cast<ncclComm_t>(comm));
-}
+                          se::Stream& stream, NcclApi::NcclCommHandle comm);
 
 absl::Status RunReduceScatter(ReductionKind reduction_kind,
                               std::vector<DeviceBufferPair>& buffers,
-                              se::Stream& stream, ncclComm_t comm);
-
-inline absl::Status RunReduceScatter(ReductionKind reduction_kind,
-                                     std::vector<DeviceBufferPair>& buffers,
-                                     se::Stream& stream, NcclCommHandle comm) {
-  return RunReduceScatter(reduction_kind, buffers, stream,
-                          reinterpret_cast<ncclComm_t>(comm));
-}
+                              se::Stream& stream, NcclApi::NcclCommHandle comm);
 
 }  // namespace gpu
 }  // namespace xla

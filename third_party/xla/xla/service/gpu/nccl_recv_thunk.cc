@@ -1,4 +1,4 @@
-/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ limitations under the License.
 #include "xla/mlir_hlo/lhlo/IR/lhlo_ops.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/gpu/nccl_api.h"
+#include "xla/service/gpu/nccl_collective_thunk.h"
 #include "xla/stream_executor/stream.h"
 #include "tsl/platform/errors.h"
 
@@ -41,16 +42,16 @@ NcclP2PConfig GetNcclP2PConfig(RecvOp op, int64_t replica_count,
 }
 
 absl::Status CheckImplementable(RecvOp op) {
-  TF_RETURN_IF_ERROR(NcclCollectiveThunk::CheckImplementable());
   return IsValidOperand(op.getOutputs()[0], Thunk::kNcclSend);
 }
 
 }  // namespace impl
 
-NcclRecvThunk::NcclRecvThunk(ThunkInfo thunk_info, RecvOp op,
-                             int64_t replica_count, int64_t partition_count,
-                             const Buffer& buffer)
-    : NcclCollectiveThunk(Thunk::kNcclRecv, thunk_info, /*is_sync=*/false),
+NcclRecvThunk::NcclRecvThunk(ThunkInfo thunk_info, const NcclApi* nccl_api,
+                             RecvOp op, int64_t replica_count,
+                             int64_t partition_count, const Buffer& buffer)
+    : NcclCollectiveThunk(Thunk::kNcclRecv, thunk_info, nccl_api,
+                          /*is_sync=*/false),
       config_(GetNcclP2PConfig(op, replica_count, partition_count)),
       buffer_(buffer) {}
 
@@ -71,7 +72,7 @@ NcclRecvThunk::NcclRecvThunk(ThunkInfo thunk_info, RecvOp op,
 
 absl::Status NcclRecvThunk::RunNcclCollective(const ExecuteParams& params,
                                               se::Stream& stream,
-                                              ncclComm_t comm) {
+                                              NcclApi::NcclCommHandle comm) {
   TF_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferPair> device_buffers,
       ConvertToDeviceBuffers(params, {buffer_},
@@ -98,8 +99,8 @@ absl::Status NcclRecvThunk::RunNcclCollective(const ExecuteParams& params,
 
 absl::Status RunRecv(NcclP2PConfig::SourceTargetMapEntry source_target,
                      DeviceBufferPair& buffer, se::Stream& stream,
-                     ncclComm_t comm, absl::string_view device_string,
-                     int64_t current_id) {
+                     NcclApi::NcclCommHandle comm,
+                     absl::string_view device_string, int64_t current_id) {
   // Determine the source IDs for this instance. The source ID is the ID for
   // the peer that will copy its data to this instance. If there is no source,
   // just memzero() the destination buffer.
@@ -115,9 +116,9 @@ absl::Status RunRecv(NcclP2PConfig::SourceTargetMapEntry source_target,
 
   // Receive data from the source peer to the destination buffer.
   if (source_id) {
-    TF_RETURN_IF_ERROR(NcclApi::Recv(
-        dest_addr, buffer.element_type, buffer.element_count, *source_id,
-        reinterpret_cast<NcclApi::NcclCommHandle>(comm), &stream));
+    TF_RETURN_IF_ERROR(NcclApi::Recv(dest_addr, buffer.element_type,
+                                     buffer.element_count, *source_id, comm,
+                                     &stream));
 
   } else {
     // If there is no source peer, i.e. no sender to this instance, zero out
