@@ -103,6 +103,7 @@ cc_library(
     deps = if_rocm_is_configured([
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "//xla/stream_executor/gpu:gpu_collectives_header",
         "//xla/stream_executor/gpu:gpu_driver_header",
     ]),
 )
@@ -161,6 +162,7 @@ cc_library(
         "//xla/stream_executor/platform",
         "//xla/stream_executor/platform:dso_loader",
         "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:fingerprint",
     ]),
     alwayslink = True,
 )
@@ -178,6 +180,12 @@ cc_library(
 rocm_library(
     name = "hip_conditional_kernels",
     srcs = if_rocm_is_configured(["hip_conditional_kernels.cu.cc"]),
+    deps = if_rocm_is_configured(["@local_config_rocm//rocm:rocm_headers"]),
+)
+
+rocm_library(
+    name = "hip_noop_kernel",
+    srcs = if_rocm_is_configured(["hip_noop_kernel.cu.cc"]),
     deps = if_rocm_is_configured(["@local_config_rocm//rocm:rocm_headers"]),
 )
 

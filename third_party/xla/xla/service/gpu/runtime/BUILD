@@ -89,6 +89,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
     ] + if_gpu_is_configured([
         "//xla/service/gpu:mock_nccl_utils",
     ]),
@@ -210,7 +211,7 @@ cc_library(
         "//xla/stream_executor:device_memory",
         "@com_google_absl//absl/status",
     ] + if_gpu_is_configured([
-        "//xla/service/gpu:cub_sort_thunk",
+        "//xla/service/gpu/runtime3:cub_sort_thunk",
     ]),
 )
 
@@ -611,8 +612,8 @@ cc_library(
         "//xla/service:hlo_proto_cc",
         "//xla/service/gpu:launch_dimensions",
         "//xla/service/gpu:stream_executor_util",
-        "//xla/service/gpu/kernels:custom_fusion",
         "//xla/service/gpu/kernels:custom_kernel",
+        "//xla/service/gpu/kernels:custom_kernel_fusion",
         "//xla/stream_executor",
         "//xla/stream_executor/gpu:gpu_graph",
         "@com_google_absl//absl/container:flat_hash_map",

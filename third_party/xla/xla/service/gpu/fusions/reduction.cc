@@ -422,9 +422,9 @@ class ReductionFusion::ReductionGroupEmitter {
       const HloReduceInstruction* reduction, const HloInstruction* root,
       int output_idx) const;
 
-  void GenerateElementForReducer(
-      const HloReduceInstruction* reduction, llvm::Value* partial_result_index,
-      const llvm_ir::IrArray::Index& input_index) const;
+  void GenerateElementForReducer(const HloReduceInstruction* reduction,
+                                 llvm::Value* partial_result_index,
+                                 const llvm_ir::IrArray::Index& index) const;
 
   absl::Status EmitExtraOutputsForReduce(
       const Shape& reduction_operand_shape,
@@ -594,23 +594,23 @@ ReductionFusion::ReductionEmitter::BuildKernelThunkForFusion(
           : KernelArguments::Create(ir_emitter_context_.allocations(),
                                     fusion_op));
 
-  auto kernel_builder_status = absl::OkStatus();
-  auto [entry, cached] = ir_emitter_context_.kernel_cache().GetWithStatus(
-      fused_computation, kernel_arguments.args(), discriminator,
-      [&]() -> absl::StatusOr<KernelReuseCache::Entry> {
-        llvm::Function* kernel;
-        std::vector<llvm_ir::IrArray> input_arrays;
-        std::vector<llvm_ir::IrArray> output_arrays;
-        TF_ASSIGN_OR_RETURN(
-            std::tie(kernel, input_arrays, output_arrays),
-            BuildKernelPrototype(ir_emitter_context_, suggested_kernel_name,
-                                 kernel_arguments.args(),
-                                 fusion_.operand_count(), launch_dimensions,
-                                 builder_));
-        TF_RETURN_IF_ERROR(kernel_builder_fn(input_arrays, output_arrays));
-        return {{kernel->getName().str(), launch_dimensions}};
-      });
-  TF_RETURN_IF_ERROR(entry.status());
+  auto [status_or_entry, cached] =
+      ir_emitter_context_.kernel_cache().GetWithStatus(
+          fused_computation, kernel_arguments.args(), discriminator,
+          [&]() -> absl::StatusOr<KernelReuseCache::Entry> {
+            llvm::Function* kernel;
+            std::vector<llvm_ir::IrArray> input_arrays;
+            std::vector<llvm_ir::IrArray> output_arrays;
+            TF_ASSIGN_OR_RETURN(
+                std::tie(kernel, input_arrays, output_arrays),
+                BuildKernelPrototype(ir_emitter_context_, suggested_kernel_name,
+                                     kernel_arguments.args(),
+                                     fusion_.operand_count(), launch_dimensions,
+                                     builder_));
+            TF_RETURN_IF_ERROR(kernel_builder_fn(input_arrays, output_arrays));
+            return {{kernel->getName().str(), launch_dimensions}};
+          });
+  TF_ASSIGN_OR_RETURN(const KernelReuseCache::Entry* entry, status_or_entry);
   if (cached) {
     VLOG(3) << "Reuse: " << suggested_kernel_name << " -> "
             << entry->kernel_name;
@@ -1098,7 +1098,7 @@ void ReductionFusion::ReductionGroupEmitter::
 // given reducer of index `i`.
 void ReductionFusion::ReductionGroupEmitter::GenerateElementForReducer(
     const HloReduceInstruction* reduction, llvm::Value* partial_result_index,
-    const llvm_ir::IrArray::Index& input_index) const {
+    const llvm_ir::IrArray::Index& index) const {
   HloComputation* reducer = reduction->to_apply();
   auto* builder = reduction_emitter_.builder_;
   CHECK_EQ(reducer->num_parameters() % 2, 0);
@@ -1111,6 +1111,10 @@ void ReductionFusion::ReductionGroupEmitter::GenerateElementForReducer(
     llvm::AllocaInst* input_address = state.input_address;
     llvm::AllocaInst* partial_reduction_result_address =
         state.partial_result_address;
+    llvm_ir::IrArray::Index input_index = GetUnnormalizedIndex(
+        index, reduction->operand(0)->shape(), builder,
+        reduction_emitter_.reduction_codegen_info_.GetTilingScheme()
+            .GetShape());
     llvm::Value* const input_ir_value = *state.input_gen(input_index);
     builder->CreateStore(input_ir_value, input_address);
     llvm::Value* partial_result_address = builder->CreateInBoundsGEP(
@@ -1178,42 +1182,42 @@ absl::Status ReductionFusion::ReductionEmitter::EmitIRForReduction(
   ReductionGroupEmitter group_emitter(*this, heroes, result_ir_arrays,
                                       fused_emitter);
 
-  EmitTileElementFunction emit_reduction_element =
-      [&](const TilingThreadIdInfo& thread_id_info,
-          const llvm_ir::IrArray::Index& index, llvm::Value* y_loc,
-          llvm::Value* x_loc) {
-        llvm_ir::IrArray::Index input_index = GetUnnormalizedIndex(
-            index, input_shape, builder_,
-            reduction_codegen_info_.GetTilingScheme().GetShape());
-        llvm::Value* partial_result_index =
-            reduction_codegen_info_.IsRowReduction()
-                ? builder_->getInt32(0)
-                : builder_->CreateSub(
-                      x_loc,
-                      GetStartOffsetX(tiling_scheme, thread_id_info.thread_id_x,
-                                      index_ty_, builder_));
-
-        // Emit code to generate the input and perform the reduction computation
-        // for each reduction instruction.
-        for (const HloReduceInstruction* reduce : heroes) {
-          group_emitter.GenerateElementForReducer(reduce, partial_result_index,
-                                                  input_index);
-        }
-
-        // Emit code to generate the output for the non-reduction instructions
-        // in the fusion, if any.
-        TF_CHECK_OK(group_emitter.EmitExtraOutputsForReduce(
-            input_shape, input_index, extra_output_gens));
-      };
-
   TF_ASSIGN_OR_RETURN(
       TilingKernelInfo tiling_kernel_info,
       EmitTilingKernel(
           builder_, tiling_scheme, index_ty_,
           [&](const TilingThreadIdInfo& thread_id_info,
-              const llvm_ir::IrArray::Index& index,
+              const llvm_ir::IrArray::Index& tile_index,
               std::array<llvm::Value*, 2> tile_dimensions) {
-            EmitTile(builder_, reduction_codegen_info_.GetTilingScheme(), index,
+            auto emit_reduction_element = [&](llvm::Value* y_loc,
+                                              llvm::Value* x_loc) {
+              llvm_ir::IrArray::Index index =
+                  tile_index.AddOffsetToDim(y_loc, TilingScheme::DimY, builder_)
+                      .AddOffsetToDim(x_loc, TilingScheme::DimX, builder_);
+              llvm::Value* partial_result_index =
+                  reduction_codegen_info_.IsRowReduction()
+                      ? builder_->getInt32(0)
+                      : builder_->CreateSub(
+                            x_loc, GetStartOffsetX(tiling_scheme,
+                                                   thread_id_info.thread_id_x,
+                                                   index_ty_, builder_));
+
+              // Emit code to generate the input and perform the reduction
+              // computation for each reduction instruction.
+              for (const HloReduceInstruction* reduce : heroes) {
+                group_emitter.GenerateElementForReducer(
+                    reduce, partial_result_index, index);
+              }
+
+              // Emit code to generate the output for the non-reduction
+              // instructions in the fusion, if any.
+              TF_CHECK_OK(group_emitter.EmitExtraOutputsForReduce(
+                  ShapeUtil::MakeShape(
+                      F32,
+                      reduction_codegen_info_.GetTilingScheme().GetShape()),
+                  index, extra_output_gens));
+            };
+            EmitTile(builder_, reduction_codegen_info_.GetTilingScheme(),
                      thread_id_info, tile_dimensions, emit_reduction_element);
           }));
 

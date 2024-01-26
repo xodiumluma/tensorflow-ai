@@ -45,6 +45,7 @@ void AddShapeLegalizationPasses(OpPassManager& pm) {
 }
 
 void AddStablehloQuantToIntPasses(OpPassManager& pm) {
+  pm.addPass(createInlinerPass());
   // StableHLO -> MHLO legalization.
   pm.addPass(mhlo::createStablehloLegalizeToHloPass());
   pm.addNestedPass<func::FuncOp>(createConvertMHLOQuantToIntPass(
@@ -59,6 +60,10 @@ void AddStablehloQuantToIntPasses(OpPassManager& pm) {
 // NOMUTANTS -- Add tests for individual passes with migration below.
 void AddCallModuleSerializationPasses(OpPassManager& pm) {
   AddShapeLegalizationPasses(pm);
+  // Add an inliner pass to inline quantized StableHLO functions (and others) so
+  // that StableHLO ops are properly grouped and converted into XlaCallModule
+  // ops by the ReplaceStablehloOpsInMainFunctionWithXlaCallModuleOpsPass.
+  pm.addPass(createInlinerPass());
   pm.addPass(createReplaceStablehloOpsInMainFunctionWithXlaCallModuleOpsPass());
   // ReplaceStablehloOpsInMainFunctionWithXlaCallModuleOpsPass may create
   // duplicate constants. Add canonicalizer to deduplicate.

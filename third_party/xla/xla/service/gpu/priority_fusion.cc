@@ -30,6 +30,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/meta/type_traits.h"
+#include "absl/strings/str_cat.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -709,7 +710,6 @@ HloInstruction::FusionKind GpuPriorityFusion::ChooseKind(
   // Derive kInput/kLoop fusion kinds from fusion analysis. This shouldn't
   // matter but some passes downstream still query these instead of fusion
   // analysis.
-  // TODO: Don't recompute this all the time.
   const auto& analysis = fusion_analysis_cache_.Get(*producer, *consumer);
   if (!analysis) return HloInstruction::FusionKind::kLoop;
   switch (analysis->GetEmitterFusionKind()) {
@@ -718,6 +718,7 @@ HloInstruction::FusionKind GpuPriorityFusion::ChooseKind(
     case HloFusionAnalysis::EmitterFusionKind::kTriton:
     case HloFusionAnalysis::EmitterFusionKind::kCustomFusion:
       return HloInstruction::FusionKind::kCustom;
+    case HloFusionAnalysis::EmitterFusionKind::kConcatenate:
     case HloFusionAnalysis::EmitterFusionKind::kReduction:
     case HloFusionAnalysis::EmitterFusionKind::kTranspose:
     case HloFusionAnalysis::EmitterFusionKind::kInputSlices:
@@ -734,6 +735,15 @@ HloInstruction* GpuPriorityFusion::FuseInstruction(
   } else {
     result = InstructionFusion::FuseInstruction(fusion_instruction, producer);
   }
+
+  absl::string_view emitter_fusion_kind =
+      HloFusionAnalysis::GetEmitterFusionKindString(
+          fusion_analysis_cache_.Get(*fusion_instruction)
+              ->GetEmitterFusionKind());
+  fusion_instruction->SetAndSanitizeName(
+      absl::StrCat(emitter_fusion_kind, "_fusion"));
+  fusion_instruction->UniquifyName(
+      &fusion_instruction->GetModule()->instruction_name_uniquer());
   return result;
 }
 
