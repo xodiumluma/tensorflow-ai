@@ -25,6 +25,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -41,8 +42,8 @@ limitations under the License.
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/kernel_arguments.h"
-#include "xla/service/gpu/kernels/custom_fusion.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
+#include "xla/service/gpu/kernels/custom_kernel_fusion.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/runtime3/kernel_thunk.h"
 #include "xla/service/gpu/thunk.h"
@@ -77,20 +78,6 @@ absl::StatusOr<std::unique_ptr<Thunk>> BuildCustomKernelThunkForFusion(
       instr, std::move(custom_kernel), std::move(kernel_arguments.args()));
 }
 
-bool IsSliceInLeadingDimOnly(const HloInstruction& instr) {
-  auto slice = DynCast<HloSliceInstruction>(&instr);
-  if (!slice) return false;
-  const Shape& shape = slice->operand(0)->shape();
-  int64_t major_dim = shape.layout().minor_to_major().back();
-  for (size_t i = 0; i < shape.rank(); ++i) {
-    if (i == major_dim) continue;
-    if (slice->slice_starts(i) != 0 ||
-        slice->slice_limits(i) != shape.dimensions(i))
-      return false;
-  }
-  return true;
-}
-
 absl::StatusOr<BufferAllocation::Slice> GetSliceWithUpdatedOffsetAndSize(
     const BufferAssignment& buffer_assignment, const HloFusionAdaptor& fusion,
     const HloInstruction* bufferized_instr, const HloInstruction& start) {
@@ -106,35 +93,32 @@ absl::StatusOr<BufferAllocation::Slice> GetSliceWithUpdatedOffsetAndSize(
   const auto& slice_instr = *static_cast<const HloSliceInstruction*>(
       &maybe_slice_adaptor->instruction());
 
-  TF_RET_CHECK(IsSliceWithUnitStrides(&slice_instr))
-      << "AddressComputationFusion only handles slices with unit strides "
-         "currently";
-  TF_RET_CHECK(IsSliceInLeadingDimOnly(slice_instr))
-      << "AddressComputationFusion only handles slices in leading dim "
-         "currently";
+  TF_RET_CHECK(IsContiguousSlice(slice_instr))
+      << "AddressComputationFusion only handles contiguous slices currently";
 
-  // Given this shape f16[10,10,10]{2,1,0}, sliced into f16[2,10,10]{2,1,0}
-  // We say that the sliced shape contains 2 slice units of f16[10,10]
-  const Shape& shape = slice_instr.shape();
-  int64_t major_dim = shape.layout().minor_to_major().back();
-  // The sliced leading dim is the number of slice units.
-  int64_t slice_unit_count = shape.dimensions(major_dim);
-  int64_t num_elem = ShapeUtil::ElementsIn(shape);
-  // The number of elements in a slice unit is the total number of elements
-  // divided by the number of slice units.
-  int64_t slice_unit_num_elem = num_elem / slice_unit_count;
-  int64_t slice_unit_byte_size =
-      slice_unit_num_elem *
-      ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
+  const Shape& src_shape = slice_instr.operand(0)->shape();
+  const Shape& dst_shape = slice_instr.shape();
+  int64_t size = ShapeUtil::ByteSizeOf(dst_shape);
 
-  int64_t offset = slice_instr.slice_starts(major_dim) * slice_unit_byte_size;
-  int64_t size = slice_unit_count * slice_unit_byte_size;
+  // Given this slice
+  // f16[1,4,8]{2,1,0} slice(f16[2,8,8]{2,1,0}),
+  //                         slice={[1:2], [4:8], [0:8]}
+  //
+  // The offset of the slice should be:
+  //    slice_starts(0) * 8 * 8 * sizeof(f16) +
+  //    slice_starts(1) * 8 * sizeof(f16)
+  int64_t offset = 0;
+  for (auto [start, stride] : llvm::zip(slice_instr.slice_starts(),
+                                        *ShapeUtil::ByteStrides(src_shape))) {
+    offset += start * stride;
+  }
+
   return BufferAllocation::Slice(orig_slice.allocation(), offset, size);
 }
 
 }  // namespace
 
-absl::StatusOr<FusionEmissionResult> CustomFusionEmitter::Emit(
+absl::StatusOr<FusionEmissionResult> CustomFusion::Emit(
     IrEmitterContext& ir_emitter_context, mlir::lmhlo::FusionOp fusion_op,
     const HloFusionInstruction& fusion) const {
   TF_ASSIGN_OR_RETURN(auto gpu_config,
@@ -145,27 +129,28 @@ absl::StatusOr<FusionEmissionResult> CustomFusionEmitter::Emit(
 
   VLOG(3) << "Lower HLO fusion to a custom fusion " << config.name();
 
-  auto* registry = CustomFusionRegistry::Default();
-  auto* custom_fusion = registry->Lookup(config.name());
+  auto* registry = CustomKernelFusionRegistry::Default();
+  auto* custom_kernel_fusion = registry->Lookup(config.name());
 
   // If custom fusion is not found it means that some of the build targets might
   // not be statically linked into the binary.
-  if (custom_fusion == nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "Custom fusion ", config.name(), " not found in a default registry."));
+  if (custom_kernel_fusion == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("Custom kernel fusion ", config.name(),
+                     " not found in a default registry."));
   }
 
   // Load custom kernels that can implement a fusion computation.
-  TF_ASSIGN_OR_RETURN(
-      std::vector<CustomKernel> kernels,
-      custom_fusion->LoadKernels(ir_emitter_context.gpu_device_info(),
-                                 fusion.fused_instructions_computation()));
+  TF_ASSIGN_OR_RETURN(std::vector<CustomKernel> kernels,
+                      custom_kernel_fusion->LoadKernels(
+                          ir_emitter_context.gpu_device_info(),
+                          fusion.fused_instructions_computation()));
 
   // This should never happen, it means that compilation pipeline created a
   // fusion operation that is not supported by a given custom fusion.
   if (kernels.empty()) {
     return absl::InternalError(
-        absl::StrCat("Custom fusion ", config.name(),
+        absl::StrCat("Custom kernel fusion ", config.name(),
                      " returned empty custom kernels for a fused computation"));
   }
 
@@ -183,7 +168,7 @@ absl::StatusOr<FusionEmissionResult> CustomFusionEmitter::Emit(
   return result;
 }
 
-absl::StatusOr<FusionEmissionResult> AddressComputationFusionEmitter::Emit(
+absl::StatusOr<FusionEmissionResult> AddressComputationFusion::Emit(
     IrEmitterContext& ir_emitter_context, mlir::lmhlo::FusionOp fusion_op,
     const HloFusionInstruction& fusion) const {
   const BufferAssignment& buffer_assignment =

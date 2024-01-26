@@ -126,7 +126,7 @@ limitations under the License.
 #include "xla/service/gpu/compile_module_to_llvm_ir.h"
 #include "xla/service/gpu/conv_layout_normalization.h"
 #include "xla/service/gpu/copy_fusion.h"
-#include "xla/service/gpu/custom_fusion_rewriter.h"
+#include "xla/service/gpu/custom_kernel_fusion_rewriter.h"
 #include "xla/service/gpu/dot_dimension_sorter.h"
 #include "xla/service/gpu/dot_operand_converter.h"
 #include "xla/service/gpu/fusion_merger_triton.h"
@@ -246,6 +246,8 @@ limitations under the License.
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/numbers.h"
+#include "tsl/platform/path.h"
+#include "tsl/platform/protobuf.h"  // IWYU pragma: keep
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/threadpool.h"
 #include "tsl/profiler/lib/traceme.h"
@@ -340,21 +342,20 @@ class GpuAotCompilationResult : public AotCompilationResult {
 
 class GpuThunkAotCompilationResult : public AotCompilationResult {
  public:
-  GpuThunkAotCompilationResult(const HloModule* hlo_module,
-                               const BufferAssignment* buffer_assignment,
-                               std::string_view asm_text,
-                               absl::Span<const uint8_t> binary) {
-    *proto_.mutable_hlo_module() = hlo_module->ToProto();
-    *proto_.mutable_buffer_assignment() = buffer_assignment->ToProto();
-    proto_.set_asm_text(std::string(asm_text));
-    proto_.set_binary(binary.data(), binary.size());
-  }
-
   explicit GpuThunkAotCompilationResult(CompilationResultProto proto)
-      : proto_(proto) {}
+      : proto_(std::move(proto)) {}
 
-  absl::StatusOr<std::string> SerializeAsString() const override {
-    return proto_.SerializeAsString();
+  static absl::StatusOr<std::unique_ptr<GpuThunkAotCompilationResult>>
+  FromModule(const HloModule* hlo_module,
+             const BufferAssignment* buffer_assignment,
+             std::string_view asm_text, absl::Span<const uint8_t> binary) {
+    CompilationResultProto proto;
+    TF_ASSIGN_OR_RETURN(*proto.mutable_hlo_module_with_config(),
+                        hlo_module->ToProtoWithConfig());
+    *proto.mutable_buffer_assignment() = buffer_assignment->ToProto();
+    proto.set_asm_text(std::string(asm_text));
+    proto.set_binary(binary.data(), binary.size());
+    return std::make_unique<GpuThunkAotCompilationResult>(std::move(proto));
   }
 
   static absl::StatusOr<std::unique_ptr<GpuThunkAotCompilationResult>>
@@ -364,7 +365,12 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
       return Internal(
           "Failed to parse serialized GpuThunkAotCompilationResult.");
     }
-    return std::make_unique<GpuThunkAotCompilationResult>(proto);
+
+    return std::make_unique<GpuThunkAotCompilationResult>(std::move(proto));
+  }
+
+  absl::StatusOr<std::string> SerializeAsString() const override {
+    return proto_.SerializeAsString();
   }
 
   absl::StatusOr<std::unique_ptr<Executable>> LoadExecutable(
@@ -410,13 +416,10 @@ GpuAotCompilationResult::LoadExecutable(
 absl::StatusOr<std::unique_ptr<Executable>>
 GpuThunkAotCompilationResult::LoadExecutable(
     Compiler* compiler, const se::StreamExecutor* stream_exec) const {
-  // Recreate HloModule from proto.
-  TF_ASSIGN_OR_RETURN(HloModuleConfig hlo_module_config,
-                      HloModule::CreateModuleConfigFromProto(
-                          proto_.hlo_module(), GetDebugOptionsFromFlags()));
+  // Recreate HloModule+HloModuleConfig from proto.
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<HloModule> hlo_module,
-      HloModule::CreateFromProto(proto_.hlo_module(), hlo_module_config));
+      HloModule::CreateFromProtoWithConfig(proto_.hlo_module_with_config()));
 
   // Recreate BufferAssignment from proto.
   TF_ASSIGN_OR_RETURN(
@@ -1260,15 +1263,15 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     });
     pipeline.AddPass<HloPassFix<MoveCopyToUsers>>();
 
-    // Greedy pattern matching for custom fusions. We run it before Triton
-    // rewriter or a regular Gemm rewriter to be able to match compatible GEMMs
-    // before they matched into Triton gemm or a cuBLAS custom call.
+    // Greedy pattern matching for custom kernel fusions. We run it before
+    // Triton rewriter or a regular Gemm rewriter to be able to match compatible
+    // GEMMs before they matched into Triton gemm or a cuBLAS custom call.
     //
     // TODO(ezhulenev): This should be plugged into the cost model and fusion
     // heuristic, so we can mix and match various Gemm implementations based
     // on projected (measured) performance.
     if (debug_options.xla_gpu_enable_custom_fusions()) {
-      pipeline.AddPass<CustomFusionRewriter>(
+      pipeline.AddPass<CustomKernelFusionRewriter>(
           &gpu_target_config.device_description);
     }
 
@@ -1382,7 +1385,7 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
 
 // Returns the TargetConfig, either from the module debug options, or from the
 // CompilationOptions, or if both of those are absent, from the attached GPU.
-absl::StatusOr<Compiler::TargetConfig> GetTargetConfig(
+/*static*/ absl::StatusOr<Compiler::TargetConfig> GpuCompiler::GetTargetConfig(
     const Compiler::CompileOptions& options, const DebugOptions& debug_opts,
     se::StreamExecutor* executor) {
   if (options.target_config.has_value()) {
@@ -1829,6 +1832,13 @@ absl::StatusOr<std::unique_ptr<Executable>> GpuCompiler::RunBackend(
   TF_ASSIGN_OR_RETURN(TargetConfig gpu_target_config,
                       GetTargetConfig(options, debug_opts, stream_exec));
 
+  if (DumpingEnabledForHloModule(*module)) {
+    std::string textproto;
+    tsl::protobuf::TextFormat::PrintToString(gpu_target_config.ToProto(),
+                                             &textproto);
+    DumpToFileInDirOrStdout(*module, "", "gpu_target_config.pbtxt", textproto);
+  }
+
   if (!options.is_autotuning_compilation) {
     VLOG(1) << "Starting to compile HLO module " << module->name();
   }
@@ -1963,9 +1973,11 @@ GpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
 
     if (!IsXlaRuntimeExecutableEnabled(module->config())) {
       // Create GpuThunkAotCompilationResult if thunk runtime is enabled.
-      results.emplace_back(std::make_unique<GpuThunkAotCompilationResult>(
-          module.get(), res.compile_module_results.buffer_assignment.get(),
-          res.backend_result.asm_text, res.backend_result.binary));
+      TF_ASSIGN_OR_RETURN(
+          results.emplace_back(),
+          GpuThunkAotCompilationResult::FromModule(
+              module.get(), res.compile_module_results.buffer_assignment.get(),
+              res.backend_result.asm_text, res.backend_result.binary));
       continue;
     }
 
@@ -2042,17 +2054,13 @@ absl::StatusOr<std::unique_ptr<AotCompilationResult>> GpuCompiler::Export(
   if (!gpu_executable) return Internal("GpuExecutable is null");
 
   if (gpu_executable->IsXlaRuntimeEnabled()) {
-    HloModuleProto module_proto = gpu_executable->module().ToProto();
-    auto obj_file = gpu_executable->GetObjFile().value_or("");
-    auto mlir_module = gpu_executable->GetMlirModule().value_or("");
-    return std::make_unique<xla::gpu::GpuAotCompilationResult>(
-        module_proto, obj_file, mlir_module, gpu_executable->text(),
-        gpu_executable->binary(), gpu_executable->constants());
-  } else {
-    return std::make_unique<xla::gpu::GpuThunkAotCompilationResult>(
-        &gpu_executable->module(), gpu_executable->buffer_assignment(),
-        gpu_executable->text(), gpu_executable->binary());
+    return absl::InternalError(
+        "Exporting executables when XLA runtime is enabled is not supported");
   }
+
+  return GpuThunkAotCompilationResult::FromModule(
+      &gpu_executable->module(), gpu_executable->buffer_assignment(),
+      gpu_executable->text(), gpu_executable->binary());
 }
 
 absl::Status GpuCompiler::RunPostSchedulingPipelines(
@@ -2163,10 +2171,6 @@ GpuCompiler::LoadAotCompilationResult(
 absl::StatusOr<std::unique_ptr<AotCompilationResult>>
 GpuCompiler::LoadAotCompilationResultStatic(
     const std::string& serialized_aot_result) {
-  // TODO(anlunx): Remove the code that loads a GpuAotCompilationResult when we
-  // convert to thunk runtime.
-  auto result = GpuAotCompilationResult::FromString(serialized_aot_result);
-  if (result.ok()) return result;
   return GpuThunkAotCompilationResult::FromString(serialized_aot_result);
 }
 

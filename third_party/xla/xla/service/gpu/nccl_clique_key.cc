@@ -1,4 +1,4 @@
-/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -42,6 +44,13 @@ absl::Span<const GlobalDeviceId> NcclCliqueKey::devices() const {
   return devices_;
 }
 
+std::optional<int64_t> NcclCliqueKey::rank(GlobalDeviceId id) const {
+  if (auto it = absl::c_find(devices_, id); it != devices_.end()) {
+    return it - devices_.begin();
+  }
+  return std::nullopt;
+}
+
 std::string NcclCliqueKey::ToString() const {
   return absl::StrCat("devices=", GlobalDeviceIdsToString(devices_),
                       "; stream=", stream_id_);
@@ -49,6 +58,13 @@ std::string NcclCliqueKey::ToString() const {
 
 bool operator==(const NcclCliqueKey& a, const NcclCliqueKey& b) {
   return a.devices_ == b.devices_ && a.stream_id_ == b.stream_id_;
+}
+
+bool operator<(const NcclCliqueKey& a, const NcclCliqueKey& b) {
+  if (a.stream_id_ < b.stream_id_) return true;
+  if (b.stream_id_ < a.stream_id_) return false;
+
+  return a.devices_ < b.devices_;
 }
 
 //===----------------------------------------------------------------------===//

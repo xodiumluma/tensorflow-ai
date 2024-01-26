@@ -29,12 +29,14 @@ namespace gpu {
 
 // Describes tiling used by the kernel.
 //
-// Used by reductions and 021 transpose algorithm. Both algorithms operate over
+// Used by reduction and transpose emitters. Both algorithms operate over
 // "logical" 3D views over input arrays, hence tiling and number of threads
 // information has only 3 dimensions.
 //
 // In the presence of virtual threadIdx/blockIdx scaling, all accessors are
 // "logical", unless otherwise specified.
+//
+// DimZ is always the batch dimension, DimY and DimX are tiled.
 class TilingScheme {
  public:
   enum { DimZ = 0, DimY, DimX, DimTot };
@@ -48,13 +50,12 @@ class TilingScheme {
 
   TilingScheme(Vector3 dims_in_elems, Vector3 tile_sizes, Vector3 num_threads,
                IndexingOrder indexing_order, int vector_size,
-               int scaling_factor, Vector2 tiling_dimensions = Vector2{1, 2})
+               int scaling_factor)
       : dims_in_elems_(dims_in_elems),
         tile_sizes_per_thread_(tile_sizes),
         tile_sizes_per_block_{num_threads[0] * tile_sizes[0],
                               num_threads[1] * tile_sizes[1],
                               num_threads[2] * tile_sizes[2]},
-        tiling_dimensions_(tiling_dimensions),
         num_threads_(num_threads),
         indexing_order_(indexing_order),
         vector_size_(vector_size),
@@ -85,9 +86,7 @@ class TilingScheme {
                          IndexingOrderToString(indexing_order_)),
          absl::StrFormat("vector_size = %d", vector_size_),
          absl::StrFormat("thread_id_virtual_scaling = %d",
-                         thread_id_virtual_scaling_),
-         absl::StrFormat("tiling_dimensions = {%s}",
-                         absl::StrJoin(tiling_dimensions_, ", "))},
+                         thread_id_virtual_scaling_)},
         ", ");
   }
 
@@ -105,9 +104,6 @@ class TilingScheme {
 
   // Tile size for an entire thread block.
   const Vector3& GetBlockTileSize() const { return tile_sizes_per_block_; }
-
-  // The tiling dimension for dimension 'd' of the shared memory tile.
-  int64_t GetTilingDimension(int d) const { return tiling_dimensions_.at(d); }
 
   // Number of logical threads per block.
   const Vector3& GetThreadsPerBlock() const { return num_threads_; }
@@ -150,9 +146,6 @@ class TilingScheme {
   // The number of elements for each dimension of a tile.
   Vector3 tile_sizes_per_thread_;
   Vector3 tile_sizes_per_block_;
-
-  // The dimensions which are used for the shared memory tile.
-  Vector2 tiling_dimensions_;
 
   // Number of threads implicitly assigned to each dimension.
   Vector3 num_threads_;
@@ -230,20 +223,17 @@ struct TilingKernelInfo {
 //
 // index: Absolute coordinate of the start of the tile in input.
 // tile_dimensions: Size of the tile
-using TileElementGenerator =
+using TileGenerator =
     std::function<void(const TilingThreadIdInfo& thread_id_info,
-                       const llvm_ir::IrArray::Index& index,
+                       const llvm_ir::IrArray::Index& tile_start_index,
                        std::array<llvm::Value*, 2> tile_dimensions)>;
 
 // A function object to generate code to process one element in a tile.
 //
-// index: the index for the first output element of the current thread.
 // y_loc: The y coordinate within a tile.
 // x_loc: The x coordinate within a tile.
-using EmitTileElementFunction =
-    std::function<void(const TilingThreadIdInfo& thread_id_info,
-                       const llvm_ir::IrArray::Index& index, llvm::Value* y_loc,
-                       llvm::Value* x_loc)>;
+using TileElementGenerator =
+    std::function<void(llvm::Value* y_loc, llvm::Value* x_loc)>;
 
 // Emits code to iterate through a 2-dimensional tile with a given tile
 // dimensions and given strides, and call the callback at each iteration.,
@@ -270,16 +260,15 @@ using EmitTileElementFunction =
 // }
 //
 void EmitTile(llvm::IRBuilder<>* builder, const TilingScheme& tiling_scheme,
-              const llvm_ir::IrArray::Index& tile_origin_index,
               const TilingThreadIdInfo& thread_id_info,
               std::array<llvm::Value*, 2> tile_dimensions,
-              const EmitTileElementFunction& emit_elem_function);
+              const TileElementGenerator& emit_elem_function);
 
 // Emits a kernel for the hlo instruction using the given kernel mapping
 // scheme.
 absl::StatusOr<TilingKernelInfo> EmitTilingKernel(
     llvm::IRBuilder<>* builder, const TilingScheme& tiling_scheme,
-    llvm::Type* index_ty, const TileElementGenerator& tile_element_generator);
+    llvm::Type* index_ty, const TileGenerator& tile_element_generator);
 
 llvm_ir::IrArray::Index GetUnnormalizedIndex(
     const llvm_ir::IrArray::Index& normalized_shape_index,

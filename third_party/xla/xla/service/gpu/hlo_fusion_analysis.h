@@ -42,6 +42,7 @@ class HloFusionAnalysis {
     kTriton,
     kReduction,
     kTranspose,
+    kConcatenate,
     kInputSlices,
     kScatter,
   };
@@ -92,6 +93,8 @@ class HloFusionAnalysis {
   const InputOutputInfo& input_output_info() const {
     return input_output_info_;
   }
+
+  static absl::string_view GetEmitterFusionKindString(EmitterFusionKind kind);
 
  private:
   HloFusionAnalysis(FusionBackendConfig fusion_backend_config,

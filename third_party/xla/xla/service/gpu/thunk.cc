@@ -24,6 +24,7 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -31,8 +32,11 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/executable_run_options.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/service/global_device_id.h"
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/service/gpu/nccl_clique.h"
+#include "xla/service/gpu/nccl_clique_key.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/translate/mhlo_to_hlo/location_exporter.h"
@@ -41,17 +45,106 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-absl::StatusOr<Thunk::ExecuteParams> Thunk::ExecuteParams::Create(
+//===----------------------------------------------------------------------===//
+// Thunk::CollectiveCliques
+//===----------------------------------------------------------------------===//
+
+Thunk::CollectiveCliques::CollectiveCliques(CliquesMap cliques_map)
+    : cliques_map_(std::move(cliques_map)) {}
+
+absl::StatusOr<NcclComm::Lock> Thunk::CollectiveCliques::GetComm(
+    const NcclCliqueKey& clique_key, int32_t rank) const {
+  // Check that we locked access to a clique for `clique_key`.
+  auto clique = cliques_map_.find(clique_key);
+  if (clique == cliques_map_.end()) {
+    return absl::NotFoundError(absl::StrCat("No clique found for clique key: ",
+                                            clique_key.ToString()));
+  }
+
+  // Check that clique has a communicator for our rank.
+  auto communicator = (*clique->second)->communicators.find(rank);
+  if (communicator == (*clique->second)->communicators.end()) {
+    return absl::InternalError(absl::StrCat("Communicator for rank ", rank,
+                                            " not found in a NCCL clique ",
+                                            clique_key.ToString()));
+  }
+
+  return communicator->second.Acquire();
+}
+
+//===----------------------------------------------------------------------===//
+// Thunk::CollectiveExecuteParams
+//===----------------------------------------------------------------------===//
+
+using GlobalDeviceIdMap = Thunk::CollectiveExecuteParams::GlobalDeviceIdMap;
+
+// Returns global device id for a local device ordinal or an error if global
+// device id map is misconfigured and missing an entry for a local device.
+static absl::StatusOr<GlobalDeviceId> GetGlobalDeviceId(
+    const GlobalDeviceIdMap* device_id_map, int64_t local_device_ordinal) {
+  // No local -> global mapping was provided; assume the identity mapping.
+  if (!device_id_map) return GlobalDeviceId(local_device_ordinal);
+
+  // Find a global device id in a global device id map.
+  auto it = device_id_map->find(local_device_ordinal);
+  if (it == device_id_map->end())
+    return absl::NotFoundError(
+        absl::StrCat("No global device id found for local device ordinal: ",
+                     local_device_ordinal));
+
+  return it->second;
+}
+
+absl::StatusOr<Thunk::CollectiveExecuteParams>
+Thunk::CollectiveExecuteParams::Create(
+    const ServiceExecutableRunOptions& run_options,
+    int64_t local_device_ordinal) {
+  const GpuExecutableRunOptions* gpu_options =
+      run_options.run_options().gpu_executable_run_options();
+
+  auto* device_id_map = gpu_options && gpu_options->gpu_global_device_ids()
+                            ? &*gpu_options->gpu_global_device_ids()
+                            : nullptr;
+
+  auto* nccl_callback = gpu_options && gpu_options->nccl_clique_id_callback()
+                            ? &gpu_options->nccl_clique_id_callback()
+                            : nullptr;
+
+  TF_ASSIGN_OR_RETURN(GlobalDeviceId global_device_id,
+                      GetGlobalDeviceId(device_id_map, local_device_ordinal));
+
+  return CollectiveExecuteParams(run_options.run_options().run_id(),
+                                 local_device_ordinal, global_device_id,
+                                 run_options.run_options().device_assignment(),
+                                 device_id_map, nccl_callback);
+}
+
+Thunk::CollectiveExecuteParams::CollectiveExecuteParams(
+    RunId run_id, int64_t local_device_ordinal, GlobalDeviceId global_device_id,
+    const DeviceAssignment* device_assn,
+    const GlobalDeviceIdMap* global_device_id_map,
+    const NcclCliqueIdCallback* nccl_clique_id_callback)
+    : run_id(run_id),
+      local_device_ordinal(local_device_ordinal),
+      global_device_id(global_device_id),
+      device_assn(device_assn),
+      global_device_id_map(global_device_id_map),
+      nccl_clique_id_callback(nccl_clique_id_callback) {}
+
+//===----------------------------------------------------------------------===//
+// Thunk::ExecuteParams
+//===----------------------------------------------------------------------===//
+
+Thunk::ExecuteParams Thunk::ExecuteParams::Create(
     const ServiceExecutableRunOptions& run_options,
     const BufferAllocations& buffer_allocations, se::Stream* stream,
     se::Stream* command_buffer_trace_stream,
-    absl::Span<se::Stream* const> async_streams) {
-  TF_ASSIGN_OR_RETURN(auto nccl_params,
-                      NcclExecuteParams::Create(
-                          run_options, stream->parent()->device_ordinal()));
+    absl::Span<se::Stream* const> async_streams,
+    CollectiveExecuteParams* collective_params,
+    CollectiveCliques* collective_cliques) {
   return ExecuteParams(&buffer_allocations, stream, command_buffer_trace_stream,
                        {async_streams.begin(), async_streams.end()},
-                       std::move(nccl_params),
+                       collective_params, collective_cliques,
                        run_options.run_options().device_to_host_stream(),
                        run_options.run_options().host_to_device_stream(),
                        run_options.run_options().send_device_memory_function(),
@@ -62,7 +155,8 @@ Thunk::ExecuteParams::ExecuteParams(
     const BufferAllocations* buffer_allocations, se::Stream* stream,
     se::Stream* command_buffer_trace_stream,
     absl::InlinedVector<se::Stream*, 4> async_comms_streams,
-    NcclExecuteParams nccl_params, se::Stream* device_to_host_stream,
+    CollectiveExecuteParams* collective_params,
+    CollectiveCliques* collective_cliques, se::Stream* device_to_host_stream,
     se::Stream* host_to_device_stream,
     SendDeviceMemoryFunction* send_device_memory_function,
     RecvDeviceMemoryFunction* recv_device_memory_function)
@@ -70,11 +164,14 @@ Thunk::ExecuteParams::ExecuteParams(
       stream(stream),
       command_buffer_trace_stream(command_buffer_trace_stream),
       async_comms_streams(async_comms_streams),
-      nccl_params(std::move(nccl_params)),
+      collective_params(collective_params),
+      collective_cliques(collective_cliques),
       device_to_host_stream(device_to_host_stream),
       host_to_device_stream(host_to_device_stream),
       send_device_memory_function(send_device_memory_function),
       recv_device_memory_function(recv_device_memory_function) {}
+
+//===----------------------------------------------------------------------===//
 
 /*static*/ absl::string_view Thunk::KindToString(Thunk::Kind kind) {
 #define CASE(x)  \

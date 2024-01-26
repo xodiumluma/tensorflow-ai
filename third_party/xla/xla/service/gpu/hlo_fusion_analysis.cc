@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -165,6 +166,29 @@ absl::StatusOr<HloFusionAnalysis> HloFusionAnalysis::Create(
 }
 
 // static
+absl::string_view HloFusionAnalysis::GetEmitterFusionKindString(
+    EmitterFusionKind kind) {
+  switch (kind) {
+    case EmitterFusionKind::kLoop:
+      return "loop";
+    case EmitterFusionKind::kCustomFusion:
+      return "custom";
+    case EmitterFusionKind::kTriton:
+      return "triton";
+    case EmitterFusionKind::kReduction:
+      return "reduction";
+    case EmitterFusionKind::kTranspose:
+      return "transpose";
+    case EmitterFusionKind::kConcatenate:
+      return "concatenate";
+    case EmitterFusionKind::kInputSlices:
+      return "input_slices";
+    case EmitterFusionKind::kScatter:
+      return "scatter";
+  }
+}
+
+// static
 absl::StatusOr<HloFusionAnalysis> HloFusionAnalysis::Create(
     const HloFusionInstruction* fusion,
     const se::DeviceDescription* device_info) {
@@ -179,6 +203,21 @@ absl::StatusOr<HloFusionAnalysis> HloFusionAnalysis::Create(
 // Returns true if the fusion has consistent transpose heros.
 bool HloFusionAnalysis::HasConsistentTransposeHeros() const {
   return tiled_transpose_.has_value();
+}
+
+static bool UseConcatenateFusion(
+    const std::vector<const HloInstruction*>& roots,
+    const std::vector<const HloInstruction*>& heroes) {
+  if (heroes.size() != 1) return false;
+  if (heroes.front()->opcode() != HloOpcode::kConcatenate) return false;
+  // The concat emitter does not support multiple outputs yet. TODO(csigg): fix.
+  if (roots.front()->shape().IsTuple()) return false;
+  // Limit the number of operands because the concat emitter produces code for
+  // each operand, hurting occupancy.
+  if (heroes.front()->operand_count() > 4) return false;
+  // The loop emitter is faster when warp divergence and occupancy are both low.
+  // TODO(csigg): exclude this case.
+  return true;
 }
 
 HloFusionAnalysis::EmitterFusionKind HloFusionAnalysis::GetEmitterFusionKind()
@@ -196,14 +235,46 @@ HloFusionAnalysis::EmitterFusionKind HloFusionAnalysis::GetEmitterFusionKind()
 
   if (input_output_info_.has_4_bit_input ||
       input_output_info_.has_4_bit_output) {
-    // Only loop fusions currently can handle int4 inputs/outputs, due to the
-    // special handling with IrArray needed to deal with two values occupying a
-    // single byte.
+    // Only loop and input slice fusions currently can handle int4
+    // inputs/outputs, due to the special handling with IrArray needed to deal
+    // with two values occupying a single byte.
+    if (fusion_roots_.size() > 1 &&
+        IsInputFusibleNonStridedSlices(fusion_roots_) &&
+        AllSliceInputsAreCompatible(fusion_roots_)) {
+      return EmitterFusionKind::kInputSlices;
+    }
     return EmitterFusionKind::kLoop;
   }
 
+  const HloInstruction* first_reduce_hero = nullptr;
   for (auto [root, hero] : llvm::zip(fusion_roots_, fusion_heroes_)) {
     if (IsRealReductionHero(*root, *hero)) {
+      first_reduce_hero = hero;
+      break;
+    }
+  }
+  if (first_reduce_hero != nullptr) {
+    bool valid_shapes = true;
+    Shape hero_operand_shape = first_reduce_hero->operand(0)->shape();
+    for (auto [root, hero] : llvm::zip(fusion_roots_, fusion_heroes_)) {
+      if (root == first_reduce_hero) {
+        continue;
+      }
+      if (!IsRealReductionHero(*root, *hero)) {
+        // Needs to have a compatible shape to the reduce operand.
+        if (!ShapeUtil::IsReshapeOrTransposeBitcast(
+                root->shape(), hero_operand_shape,
+                /*ignore_element_type=*/true)) {
+          valid_shapes = false;
+          break;
+        }
+      } else if (!AreReductionsMultiOutputFusionCompatible(hero,
+                                                           first_reduce_hero)) {
+        valid_shapes = false;
+        break;
+      }
+    }
+    if (valid_shapes) {
       return EmitterFusionKind::kReduction;
     }
   }
@@ -223,6 +294,10 @@ HloFusionAnalysis::EmitterFusionKind HloFusionAnalysis::GetEmitterFusionKind()
 
   if (fusion_roots_[0]->opcode() == HloOpcode::kScatter) {
     return EmitterFusionKind::kScatter;
+  }
+
+  if (UseConcatenateFusion(fusion_roots_, fusion_heroes_)) {
+    return EmitterFusionKind::kConcatenate;
   }
 
   return EmitterFusionKind::kLoop;

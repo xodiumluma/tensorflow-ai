@@ -618,6 +618,7 @@ xla_cc_test(
         "//xla/client:padding",
         "//xla/hlo/ir:hlo",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
@@ -7022,6 +7023,7 @@ cc_library(
 xla_cc_test(
     name = "lockable_test",
     srcs = ["lockable_test.cc"],
+    tags = ["no_aarch64"],
     deps = [
         ":lockable",
         "@com_google_absl//absl/synchronization",
@@ -7546,9 +7548,6 @@ xla_cc_test(
         ":xla_aot_compile_test_gpu_executable_convolution",
         ":xla_aot_compile_test_gpu_executable_convolution_runtime_autotuning",
     ]),
-    env = {
-        "XLA_FLAGS": "--xla_gpu_enable_xla_runtime_executable",
-    },
     tags = [
         "gpu",
         "no_oss",
@@ -7601,6 +7600,7 @@ cc_library(
     deps = [
         ":compilation_environments",
         "//xla:parse_flags_from_env",
+        "//xla:status",
         "//xla:statusor",
         "//xla:util",
         "//xla:xla_proto_cc",

@@ -7,8 +7,7 @@ load(
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
-        "//tensorflow/compiler/mlir/quantization/stablehlo:__subpackages__",
-        "//tensorflow/compiler/mlir/quantization/tensorflow:__subpackages__",
+        "//tensorflow/compiler/mlir/quantization:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -275,7 +274,6 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:Transforms",
         "@local_tsl//tsl/platform:errors",
         "@local_xla//xla/mlir_hlo:mhlo_passes",
     ],
