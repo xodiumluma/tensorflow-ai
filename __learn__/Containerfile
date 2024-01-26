@@ -1,6 +1,13 @@
 FROM node:current-bookworm-slim
 ADD __learn__/bcr-bazel-build.pem /usr/local/share/ca-certificates/bazel.crt
-ADD __learn__/pypi.pem /usr/local/share/ca-certificates/pypi.crt
+ENV TF=tensorflow
+ENV MY_WORKSPACE=buildmachine
+ENV SOURCE_DIR=/${MY_WORKSPACE}/${TF}
+ENV VENV_DIR=/${SOURCE_DIR}/.venv
+ENV BOOT_VIRTUAL_ENV='python3 -m venv ${VENV_DIR} && . ${VENV_DIR}/bin/activate'
+ENV PIP_INSTALL='python3 -m pip install -U --trusted-host pypi.org --trusted-host files.pythonhosted.org'
+ENV BUILD_PIP_PACKAGE='${SOURCE_DIR}/bazel-bin/${TF}/tools/pip_package/build_pip_package'
+ENV TEMP_TF=${MY_WORKSPACE}/tmp
 RUN apt update -y && \
   apt install -y apt-transport-https ca-certificates && \
   dpkg-reconfigure ca-certificates && \
@@ -11,12 +18,13 @@ RUN apt update -y && \
   echo "Installed Clang compiler"
 RUN npm i -g @bazel/bazelisk
 USER node
-WORKDIR /buildmachine
+WORKDIR /${SOURCE_DIR}
 COPY --chmod=755 --chown=node:node . .
 RUN chmod -R +x . && \
-  python3 -m venv .venv && \
-  . /buildmachine/.venv/bin/activate && \
-  python3 -m pip install -U --trusted-host pypi.org --trusted-host files.pythonhosted.org truststore pip numpy wheel packaging requests opt_einsum patchelf && \
-  python3 -m pip install -U --trusted-host pypi.org --trusted-host files.pythonhosted.org keras_preprocessing --no-deps && \
+  eval ${BOOT_VIRTUAL_ENV} && \
+  eval "${PIP_INSTALL} truststore pip numpy wheel packaging requests opt_einsum patchelf" && \
+  eval "${PIP_INSTALL} keras_preprocessing --no-deps" && \
   ./configure && \
-  $(which bazelisk) build --config=monolithic //tensorflow/tools/pip_package:build_pip_package
+  $(which bazelisk) build --config=monolithic --config=cuda //${TF}/tools/pip_package:build_pip_package && \
+  mkdir ${TEMP_TF} \
+  PATH=${PATH}:${VENV_DIR}/bin eval ${BUILD_PIP_PACKAGE}
