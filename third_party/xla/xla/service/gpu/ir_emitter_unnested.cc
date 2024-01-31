@@ -33,6 +33,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -101,7 +102,6 @@ limitations under the License.
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/fusions/fusions.h"
 #include "xla/service/gpu/fusions/thunk_util.h"
-#include "xla/service/gpu/gemm_thunk.h"
 #include "xla/service/gpu/gpu_asm_opts_util.h"
 #include "xla/service/gpu/gpu_conv_runner.h"
 #include "xla/service/gpu/gpu_executable.h"
@@ -116,12 +116,13 @@ limitations under the License.
 #include "xla/service/gpu/kernels/topk_custom_kernel.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/matmul_utils.h"
-#include "xla/service/gpu/nccl_all_gather_thunk.h"
 #include "xla/service/gpu/nccl_all_reduce_thunk.h"
 #include "xla/service/gpu/nccl_all_to_all_thunk.h"
 #include "xla/service/gpu/nccl_api.h"
 #include "xla/service/gpu/nccl_collective_permute_thunk.h"
 #include "xla/service/gpu/nccl_collective_thunk.h"
+#include "xla/service/gpu/nccl_recv_thunk.h"
+#include "xla/service/gpu/nccl_send_thunk.h"
 #include "xla/service/gpu/parallel_loop_emitter.h"
 #include "xla/service/gpu/runtime3/command_buffer_cmd.h"
 #include "xla/service/gpu/runtime3/command_buffer_cmd_emitter.h"
@@ -131,10 +132,11 @@ limitations under the License.
 #include "xla/service/gpu/runtime3/copy_thunk.h"
 #include "xla/service/gpu/runtime3/custom_call_thunk.h"
 #include "xla/service/gpu/runtime3/fft_thunk.h"
-#include "xla/service/gpu/runtime3/for_thunk.h"
 #include "xla/service/gpu/runtime3/fused_mha_thunk.h"
+#include "xla/service/gpu/runtime3/gemm_thunk.h"
 #include "xla/service/gpu/runtime3/infeed_thunk.h"
 #include "xla/service/gpu/runtime3/kernel_thunk.h"
+#include "xla/service/gpu/runtime3/nccl_all_gather_thunk.h"
 #include "xla/service/gpu/runtime3/norm_thunk.h"
 #include "xla/service/gpu/runtime3/outfeed_thunk.h"
 #include "xla/service/gpu/runtime3/replica_id_thunk.h"
@@ -170,7 +172,7 @@ limitations under the License.
 #include "tsl/protobuf/dnn.pb.h"
 
 #if GOOGLE_CUDA || TF_HIPBLASLT
-#include "xla/service/gpu/gpublas_lt_matmul_thunk.h"
+#include "xla/service/gpu/runtime3/gpublas_lt_matmul_thunk.h"
 #endif  // GOOGLE_CUDA || TF_HIPBLASLT
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -1225,13 +1227,56 @@ absl::Status IrEmitterUnnested::EmitCublasLtMatmulThunkF8(mlir::Operation* op) {
 }
 
 absl::Status IrEmitterUnnested::EmitConvolutionReorderThunk(
+    const HloCustomCallInstruction* instr) {
+  bool has_bias = instr->operand_count() > 1;
+  Shape shape = has_bias ? instr->shape().tuple_shapes(0) : instr->shape();
+  if (shape.rank() != 5 || shape.dimensions(4) != 32) {
+    return Internal("Unexpected shape for convolution reorder: %s",
+                    instr->ToString());
+  }
+  absl::InlinedVector<int64_t, 4> filter_dims = {
+      shape.dimensions(0), shape.dimensions(1) * 32, shape.dimensions(2),
+      shape.dimensions(3)};
+
+  absl::InlinedVector<BufferAllocation::Slice, 2> operand_slices;
+  TF_ASSIGN_OR_RETURN(BufferAllocation::Slice filter_input,
+                      GetAllocationSliceForHlo(instr->operand(0)));
+  operand_slices.push_back(filter_input);
+  if (has_bias) {
+    TF_ASSIGN_OR_RETURN(BufferAllocation::Slice bias_input,
+                        GetAllocationSliceForHlo(instr->operand(1)));
+    operand_slices.push_back(bias_input);
+  }
+
+  absl::InlinedVector<BufferAllocation::Slice, 2> result_slices;
+  if (has_bias) {
+    TF_ASSIGN_OR_RETURN(BufferAllocation::Slice filter_output,
+                        GetAllocationSliceForHlo(instr, {0}));
+    result_slices.push_back(filter_output);
+    TF_ASSIGN_OR_RETURN(BufferAllocation::Slice bias_output,
+                        GetAllocationSliceForHlo(instr, {1}));
+    result_slices.push_back(bias_output);
+  } else {
+    TF_ASSIGN_OR_RETURN(BufferAllocation::Slice filter_output,
+                        GetAllocationSliceForHlo(instr));
+    result_slices.push_back(filter_output);
+  }
+
+  auto thunk = std::make_unique<ConvolutionReorderThunk>(
+      Thunk::ThunkInfo::WithProfileAnnotation(instr),
+      absl::MakeSpan(filter_dims), operand_slices, result_slices);
+  AddThunkToThunkSequence(std::move(thunk));
+  return absl::OkStatus();
+}
+
+absl::Status IrEmitterUnnested::EmitConvolutionReorderThunk(
     mlir::Operation* op) {
   using mlir::dyn_cast;
   using mlir::lmhlo_gpu::CudnnConvReorderFilterAndBiasOp;
   using mlir::lmhlo_gpu::CudnnConvReorderFilterOp;
 
-  std::vector<BufferAllocation::Slice> operand_slices;
-  std::vector<BufferAllocation::Slice> result_slices;
+  absl::InlinedVector<BufferAllocation::Slice, 2> operand_slices;
+  absl::InlinedVector<BufferAllocation::Slice, 2> result_slices;
   std::vector<int64_t> filter_dims;
 
   auto set_filter_data = [&](auto op) -> absl::Status {
@@ -1266,7 +1311,7 @@ absl::Status IrEmitterUnnested::EmitConvolutionReorderThunk(
 
   auto thunk = std::make_unique<ConvolutionReorderThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(op), absl::MakeSpan(filter_dims),
-      std::move(operand_slices), std::move(result_slices));
+      operand_slices, result_slices);
 
   AddThunkToThunkSequence(std::move(thunk));
   return absl::OkStatus();
@@ -3043,42 +3088,26 @@ absl::Status IrEmitterUnnested::EmitWhile(
                    .isInteger(/*width=*/1))
       << "While condition computation must return bool";
 
-  // Build ForThunk for conformant while loops, otherwise build WhileThunk.
-  //
-  // If Xla runtime is enabled we always lower to `lmhlo.while` operation and
-  // rely on `lmhlo-to-gpu-runtime` to lower while loops with known trip counts
-  // to `scf.for` loops.
-  if (while_op.getTripCount() &&
-      !IsXlaRuntimeExecutableEnabled(
-          ir_emitter_context_->hlo_module().config())) {
-    TF_ASSIGN_OR_RETURN(
-        auto thunk,
-        BuildForThunk(while_op, Thunk::ThunkInfo::WithProfileAnnotation(op),
-                      *while_op.getTripCount(), hlo_for_lmhlo));
-    AddThunkToThunkSequence(std::move(thunk));
-  } else {
-    TF_ASSIGN_OR_RETURN(
-        auto thunk,
-        BuildWhileThunk(while_op, Thunk::ThunkInfo::WithProfileAnnotation(op),
-                        hlo_for_lmhlo));
-    AddThunkToThunkSequence(std::move(thunk));
-  }
+  TF_ASSIGN_OR_RETURN(
+      auto thunk,
+      BuildWhileThunk(while_op, Thunk::ThunkInfo::WithProfileAnnotation(op),
+                      hlo_for_lmhlo, while_op.getTripCount()));
+  AddThunkToThunkSequence(std::move(thunk));
   return absl::OkStatus();
 }
 
 absl::Status IrEmitterUnnested::EmitWhile(const HloInstruction* instr) {
   TF_ASSIGN_OR_RETURN(auto config,
                       instr->backend_config<xla::WhileLoopBackendConfig>());
-  if (config.has_known_trip_count()) {
-    int64_t trip_count = config.known_trip_count().n();
-    TF_ASSIGN_OR_RETURN(auto thunk, BuildForThunk(instr, trip_count));
-    AddThunkToThunkSequence(std::move(thunk));
-    return absl::OkStatus();
-  }
+
+  std::optional<int64_t> trip_count = std::nullopt;
+  if (config.has_known_trip_count()) trip_count = config.known_trip_count().n();
 
   TF_ASSIGN_OR_RETURN(
       auto thunk,
-      BuildWhileThunk(instr, Thunk::ThunkInfo::WithProfileAnnotation(instr)));
+      BuildWhileThunk(instr, Thunk::ThunkInfo::WithProfileAnnotation(instr),
+                      trip_count));
+
   AddThunkToThunkSequence(std::move(thunk));
   return absl::OkStatus();
 }
@@ -3866,7 +3895,8 @@ absl::Status IrEmitterUnnested::BuildInitializerThunk(
 absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildWhileThunk(
     mlir::lmhlo::WhileOp while_op, const Thunk::ThunkInfo& thunk_info,
     const absl::flat_hash_map<const mlir::Operation*, const HloInstruction*>&
-        hlo_for_lmhlo) {
+        hlo_for_lmhlo,
+    std::optional<int64_t> trip_count) {
   // Generate thunk sequence for while 'condition'.
   mlir::Region* condition = &while_op.getCond();
   auto ir_emitter_condition = IrEmitterUnnested::Create(ir_emitter_context_);
@@ -3890,11 +3920,12 @@ absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildWhileThunk(
   return std::unique_ptr<Thunk>(
       new WhileThunk(thunk_info, cond_result_slice,
                      ir_emitter_condition->ConsumeThunkSequence(),
-                     ir_emitter_body->ConsumeThunkSequence()));
+                     ir_emitter_body->ConsumeThunkSequence(), trip_count));
 }
 
 absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildWhileThunk(
-    const HloInstruction* instr, const Thunk::ThunkInfo& thunk_info) {
+    const HloInstruction* instr, const Thunk::ThunkInfo& thunk_info,
+    std::optional<int64_t> trip_count) {
   HloComputation* condition = instr->while_condition();
   HloComputation* body = instr->while_body();
 
@@ -3912,31 +3943,7 @@ absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildWhileThunk(
 
   return std::unique_ptr<Thunk>(new WhileThunk(
       thunk_info, pred, ir_emitter_condition->ConsumeThunkSequence(),
-      ir_emitter_body->ConsumeThunkSequence()));
-}
-
-absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildForThunk(
-    const HloInstruction* instr, int64_t loop_limit) {
-  HloComputation* body = instr->while_body();
-  auto ir_emitter_body = IrEmitterUnnested::Create(ir_emitter_context_);
-  TF_RETURN_IF_ERROR(ir_emitter_body->EmitHloComputation(body));
-  return std::unique_ptr<Thunk>(
-      new ForThunk(Thunk::ThunkInfo::WithProfileAnnotation(instr), loop_limit,
-                   ir_emitter_body->ConsumeThunkSequence()));
-}
-
-absl::StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildForThunk(
-    mlir::lmhlo::WhileOp while_op, const Thunk::ThunkInfo& thunk_info,
-    const int64_t loop_limit,
-    const absl::flat_hash_map<const mlir::Operation*, const HloInstruction*>&
-        hlo_for_lmhlo) {
-  // Generate thunk sequence for while 'body' (will be used a For loop body).
-  auto ir_emitter_body = IrEmitterUnnested::Create(ir_emitter_context_);
-  TF_RETURN_IF_ERROR(
-      ir_emitter_body->EmitLmhloRegion(&while_op.getBody(), hlo_for_lmhlo));
-
-  return std::unique_ptr<Thunk>(new ForThunk(
-      thunk_info, loop_limit, ir_emitter_body->ConsumeThunkSequence()));
+      ir_emitter_body->ConsumeThunkSequence(), trip_count));
 }
 
 absl::Status IrEmitterUnnested::EmitTargetElementLoop(
@@ -3966,6 +3973,21 @@ absl::Status IrEmitterUnnested::EmitSendThunk(const HloSendInstruction* instr) {
   const HloInstruction* src = instr->operand(0);
   TF_ASSIGN_OR_RETURN(BufferAllocation::Slice buffer,
                       GetAllocationSliceForHlo(src, {}));
+  if (!instr->is_host_transfer()) {
+    const auto& hlo_config = ir_emitter_context_->hlo_module().config();
+    const int64_t replica_count = hlo_config.replica_count();
+    const int64_t partition_count = hlo_config.num_partitions();
+    const NcclCollectiveThunk::Buffer nccl_buffer = {
+        /*element_count=*/ShapeUtil::ElementsIn(src->shape()),
+        /*source_buffer=*/buffer,
+        /*destination_buffer=*/buffer};
+    auto thunk = std::make_unique<NcclSendThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr), NcclApi::Default(),
+        instr, replica_count, partition_count, nccl_buffer);
+    collectives_async_events_.try_emplace(instr, thunk->async_events());
+    AddThunkToThunkSequence(std::move(thunk));
+    return absl::OkStatus();
+  }
 
   AddThunkToThunkSequence(std::make_unique<SendThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(instr), src->shape(), buffer,
@@ -3981,6 +4003,10 @@ absl::Status IrEmitterUnnested::EmitSendDoneThunk(
   if (!instr->channel_id().has_value())
     return absl::InternalError("Unknown send done instruction channel id");
 
+  if (!instr->is_host_transfer()) {
+    return EmitNcclAsyncDone(Thunk::kNcclSendDone, instr);
+  }
+
   AddThunkToThunkSequence(std::make_unique<SendDoneThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(instr), *instr->channel_id(),
       send_recv_events_, DeviceConstraint(instr)));
@@ -3991,9 +4017,24 @@ absl::Status IrEmitterUnnested::EmitSendDoneThunk(
 absl::Status IrEmitterUnnested::EmitRecvThunk(const HloRecvInstruction* instr) {
   if (!instr->channel_id().has_value())
     return absl::InternalError("Unknown recv instruction channel id");
-
+  TF_RET_CHECK(instr->shape().IsTuple());
   TF_ASSIGN_OR_RETURN(BufferAllocation::Slice buffer,
                       GetAllocationSliceForHlo(instr, {0}));
+  if (!instr->is_host_transfer()) {
+    const auto& hlo_config = ir_emitter_context_->hlo_module().config();
+    const int64_t replica_count = hlo_config.replica_count();
+    const int64_t partition_count = hlo_config.num_partitions();
+    const NcclCollectiveThunk::Buffer nccl_buffer = {
+        /*element_count=*/ShapeUtil::ElementsIn(instr->shape().tuple_shapes(0)),
+        /*source_buffer=*/buffer,
+        /*destination_buffer=*/buffer};
+    auto thunk = std::make_unique<NcclRecvThunk>(
+        Thunk::ThunkInfo::WithProfileAnnotation(instr), NcclApi::Default(),
+        instr, replica_count, partition_count, nccl_buffer);
+    collectives_async_events_.try_emplace(instr, thunk->async_events());
+    AddThunkToThunkSequence(std::move(thunk));
+    return absl::OkStatus();
+  }
 
   AddThunkToThunkSequence(std::make_unique<RecvThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(instr),
@@ -4009,6 +4050,10 @@ absl::Status IrEmitterUnnested::EmitRecvDoneThunk(
     const HloRecvDoneInstruction* instr) {
   if (!instr->channel_id().has_value())
     return absl::InternalError("Unknown recv done instruction channel id");
+
+  if (!instr->is_host_transfer()) {
+    return EmitNcclAsyncDone(Thunk::kNcclRecvDone, instr);
+  }
 
   AddThunkToThunkSequence(std::make_unique<RecvDoneThunk>(
       Thunk::ThunkInfo::WithProfileAnnotation(instr), *instr->channel_id(),
@@ -4090,6 +4135,10 @@ absl::Status IrEmitterUnnested::EmitOp(
   }
   if (mlir::isa<mlir::lmhlo_gpu::CudnnConvReorderFilterOp,
                 mlir::lmhlo_gpu::CudnnConvReorderFilterAndBiasOp>(op)) {
+    if (ir_emitter_context_->emit_ir_from_hlo()) {
+      const auto* instr = Cast<HloCustomCallInstruction>(hlo_for_lmhlo.at(op));
+      return EmitConvolutionReorderThunk(instr);
+    }
     return EmitConvolutionReorderThunk(op);
   }
   if (mlir::isa<mlir::lmhlo_gpu::CudnnNormOp>(op)) {
@@ -4446,6 +4495,9 @@ absl::Status IrEmitterUnnested::EmitHloInstruction(
 #if GOOGLE_CUDA
       if (IsCublasLtMatmulF8(*instr)) {
         return EmitCublasLtMatmulThunkF8(custom_call);
+      }
+      if (IsCudnnConvolutionReorder(*instr)) {
+        return EmitConvolutionReorderThunk(custom_call);
       }
 #endif  // GOOGLE_CUDA
       if (IsCustomCallToTopK(*instr)) {

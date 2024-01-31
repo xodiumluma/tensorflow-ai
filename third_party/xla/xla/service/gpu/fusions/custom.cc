@@ -36,7 +36,6 @@ limitations under the License.
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cublas_cudnn.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
-#include "xla/service/gpu/gemm_thunk.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
@@ -45,6 +44,7 @@ limitations under the License.
 #include "xla/service/gpu/kernels/custom_kernel.h"
 #include "xla/service/gpu/kernels/custom_kernel_fusion.h"
 #include "xla/service/gpu/matmul_utils.h"
+#include "xla/service/gpu/runtime3/gemm_thunk.h"
 #include "xla/service/gpu/runtime3/kernel_thunk.h"
 #include "xla/service/gpu/thunk.h"
 #include "xla/shape.h"
@@ -107,7 +107,7 @@ absl::StatusOr<BufferAllocation::Slice> GetSliceWithUpdatedOffsetAndSize(
   // The offset of the slice should be:
   //    slice_starts(0) * 8 * 8 * sizeof(f16) +
   //    slice_starts(1) * 8 * sizeof(f16)
-  int64_t offset = 0;
+  int64_t offset = orig_slice.offset();
   for (auto [start, stride] : llvm::zip(slice_instr.slice_starts(),
                                         *ShapeUtil::ByteStrides(src_shape))) {
     offset += start * stride;
