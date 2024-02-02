@@ -868,6 +868,7 @@ cc_library(
         "nccl_recv_thunk.h",
         "nccl_send_thunk.h",
     ],
+    local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
     visibility = ["//visibility:public"],
     deps = [
         ":backend_configs_cc",
@@ -895,7 +896,9 @@ cc_library(
         "//xla/service/llvm_ir:llvm_util",
         "//xla/stream_executor",
         "//xla/stream_executor/gpu:gpu_activation_header",
+        "//xla/stream_executor/gpu:gpu_driver_header",
         "//xla/stream_executor/gpu:gpu_stream",
+        "//xla/stream_executor/gpu:gpu_types_header",
         "//xla/translate/hlo_to_mhlo:hlo_utils",
         "//xla/translate/mhlo_to_hlo:attribute_exporter",
         "//xla/translate/mhlo_to_hlo:type_to_shape",
@@ -1242,6 +1245,7 @@ cc_library(
         ":non_atomically_upgradeable_rw_lock",
         ":stream_executor_util",
         ":thunk",
+        "//xla:executable_run_options",
         "//xla:shape_tree",
         "//xla:shape_util",
         "//xla:status",
@@ -2486,7 +2490,9 @@ tf_proto_library(
     name = "fusion_process_dump_proto",
     srcs = ["fusion_process_dump.proto"],
     cc_api_version = 2,
-    protodeps = [],
+    protodeps = [
+        "//xla/stream_executor:device_description_proto",
+    ],
     visibility = ["//visibility:public"],
 )
 

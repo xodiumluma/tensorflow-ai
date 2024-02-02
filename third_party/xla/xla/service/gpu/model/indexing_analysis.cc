@@ -702,10 +702,14 @@ llvm::SmallVector<AffineExpr, 4> DelinearizeInBoundsIndex(
   for (auto [size, stride] : llvm::zip(sizes, strides)) {
     result.push_back(linear.floorDiv(stride) % size);
   }
-  if (sizes[0] > 1) {
-    // Assumes the linear index is in bounds, so no % for the major dimension.
-    // If the size is 1, the dimension was already rewritten to 0 by operator%.
-    result[0] = linear.floorDiv(strides[0]);
+  for (int dim = 0; dim < sizes.size(); ++dim) {
+    if (sizes[dim] > 1) {
+      // We assume the linear index is in bounds, so no mod for the first major
+      // non-degenerate dimension. Degenerate dimensions are already rewritten
+      // to 0 by operator%.
+      result[dim] = linear.floorDiv(strides[dim]);
+      break;
+    }
   }
   return result;
 }
@@ -801,8 +805,10 @@ bool HloInstructionIndexing::Simplify() {
     std::vector<std::optional<IndexingMap>> to_remove, to_add;
     for (std::optional<IndexingMap> map : operand_indexing) {
       to_remove.push_back(map);
-      if (!map.has_value() || map->Simplify()) {
+      if (!map.has_value()) {
         to_add.push_back(map);
+      } else if (map->Simplify()) {
+        map->RemoveUnusedSymbols();
       } else {
         to_remove.pop_back();
       }
@@ -898,8 +904,14 @@ std::optional<GroupedByOpIndexingMap> ComputeGroupedOutputToInputIndexing(
            producer_operand_indexing) {
         for (const std::optional<IndexingMap>& consumer_map :
              consumer_indexing_maps) {
+          auto composed_map = ComposeIndexingMaps(consumer_map, producer_map);
+          if (composed_map.has_value()) {
+            composed_map->Simplify();
+
+            composed_map->RemoveUnusedSymbols();
+          }
           grouped_indexing_maps[&producer_operand_adaptor.instruction()].insert(
-              ComposeIndexingMaps(producer_map, consumer_map));
+              composed_map);
         }
       }
     }
