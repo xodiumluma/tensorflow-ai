@@ -151,5 +151,15 @@ build:android_x86_64 --config=android
 build:android_x86_64 --cpu=x86_64
 build:android_x86_64 --fat_apk_cpu=x86_64
 
+# set Android build to be a static build
+# static libs are afterwards packaged together in a single .so to be deployed
+build:android --dynamic_mode=off
+
+# define macOS as the default Apple platform
+build:macos --apple_platform_type=macos
+
+# Need this to get gRPC on macOS going
+build:macos --copt=-DGRPC_BAZEL_BUILD
+
 
 
