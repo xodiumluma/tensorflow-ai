@@ -16,7 +16,6 @@ limitations under the License.
 #include "xla/service/gpu/gpu_executable.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -27,7 +26,7 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "absl/algorithm/container.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
@@ -49,6 +48,7 @@ limitations under the License.
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_constants.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/gpu/nccl_clique.h"
 #include "xla/service/gpu/nccl_clique_key.h"
 #include "xla/service/gpu/non_atomically_upgradeable_rw_lock.h"
@@ -102,20 +102,19 @@ namespace gpu {
 bool IsXlaRuntimeExecutableEnabled(const HloModuleConfig& config) {
   bool enabled = config.debug_options().xla_gpu_enable_xla_runtime_executable();
   if (enabled) {
-    LOG(WARNING)
-        << "XLA:GPU uses deprecated xla runtime by setting "
-           "--xla_gpu_enable_xla_runtime_executable flag to true. This flag "
+    LOG(ERROR)
+        << "XLA:GPU tried to use deprecated xla runtime by setting "
+           "--xla_gpu_enable_xla_runtime_executable flag to `true` but the "
+           "flag value was ignored as XLA:GPU uses default runtime. This flag "
            "together with the deprecated code will be removed soon. Please "
-           "check that your workloads can run with default XLA runtime and if "
-           "not report bugs to XLA team ASAP.";
+           "report bugs to XLA team if this breaks your workloads.";
   }
-  return enabled;
+  return false;
 }
 
 namespace {
 
 using ::tsl::profiler::ScopedAnnotation;
-using ::tsl::profiler::ScopedAnnotationAlways;
 
 bool NeedsAsyncCommsStream(Thunk& thunk) {
   switch (thunk.kind()) {
@@ -173,9 +172,6 @@ GpuExecutable::GpuExecutable(GpuExecutable::Params params)
   *(uint64_t*)(&binary_[binary_.size() - 16]) = tsl::EnvTime::NowNanos();
   *(uint64_t*)(&binary_[binary_.size() - 8]) = tsl::random::New64();
 #endif
-  if (has_module()) {
-    annotation_info_.emplace(module());
-  }
   if (has_module() && enable_debug_info_manager_) {
     XlaDebugInfoManager::Get()->RegisterModule(shared_module(),
                                                buffer_assignment_->ToProto());
@@ -411,7 +407,8 @@ absl::Status ExecuteThunks(const std::string& module_name,
     // Annotate execution of this op if tracing was enabled when we started
     // running this module.  If tracing is enabled *while* we're running the
     // module, we won't get any data, but that's probably an OK trade-off.
-    ScopedAnnotation annotation([&] { return thunk->profile_annotation(); });
+    tsl::profiler::ScopedAnnotation annotation(
+        [&] { return thunk->profile_annotation(); });
     VLOG(3) << "Executing the thunk for " << thunk->profile_annotation();
     if (NeedsAsyncCommsStream(*thunk)) {
       for (se::Stream* async_stream : async_comms_streams) {
@@ -947,24 +944,6 @@ absl::StatusOr<ExecutionOutput> GpuExecutable::ExecuteAsyncOnStreamImpl(
   return std::move(result);
 }
 
-namespace {
-struct ModuleAnnotationManager {
-  ModuleAnnotationManager(const std::optional<ModuleAnnotations>& annotations) {
-    if (annotations.has_value()) {
-      m_old_annotations = SetCurrentModuleAnnotations(&(*annotations));
-    }
-  }
-  ~ModuleAnnotationManager() {
-    if (m_old_annotations.has_value()) {
-      SetCurrentModuleAnnotations(*m_old_annotations);
-    }
-  }
-
- private:
-  std::optional<const ModuleAnnotations*> m_old_annotations;
-};
-}  // namespace
-
 absl::Status GpuExecutable::ExecuteThunksOrXlaRuntime(
     const ServiceExecutableRunOptions* run_options,
     const BufferAllocations& buffer_allocations, bool block_host_until_done,
@@ -972,20 +951,13 @@ absl::Status GpuExecutable::ExecuteThunksOrXlaRuntime(
   TF_RETURN_IF_ERROR(
       CheckCompatibilityWithServiceExecutableRunOptions(run_options));
 
-  // There isn't always an HLO module.
-  ModuleIdentifier unique_id = -1;
-  if (has_module()) {
-    unique_id = module().unique_id();
-  }
+  ScopedAnnotation annotation([&] { return module_annotations_.top_level; });
+  absl::Cleanup annotations_cleanup =
+      [previous = SetCurrentModuleAnnotations(&module_annotations_)] {
+        SetCurrentModuleAnnotations(previous);
+      };
 
-  ScopedAnnotationAlways annotation([&]() -> ModuleAnnotation {
-    if (annotation_info_) {
-      return annotation_info_->top_level;
-    } else {
-      return {module_name_, unique_id};
-    }
-  });
-  ModuleAnnotationManager set_current_kernel_annotations{annotation_info_};
+  ModuleIdentifier unique_id = has_module() ? module().unique_id() : -1;
 
   if (thunks_) {
     Thunk::ExecutableSource executable_source = {text_, binary_};
@@ -1171,7 +1143,6 @@ GpuExecutable::GpuExecutable(
       output_info_(std::move(output_info)),
       enable_debug_info_manager_(true) {
   if (has_module()) {
-    annotation_info_.emplace(module());
     XlaDebugInfoManager::Get()->RegisterModule(shared_module(),
                                                BufferAssignmentProto());
   }
