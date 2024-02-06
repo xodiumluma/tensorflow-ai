@@ -161,5 +161,25 @@ build:macos --apple_platform_type=macos
 # Need this to get gRPC on macOS going
 build:macos --copt=-DGRPC_BAZEL_BUILD
 
+# Apple Silicon macOS
+build:macos_arm64 --cpu=darwin_arm64
+build:macos_arm64 --macos_minimum_os=11.0
+
+# iOS setup + fat binary
+build:ios --apple_platform_type=ios
+build:ios --apple_bitcode=embedded --copt=-fembed-bitcode
+build:ios --copt=Wno-c++11-narrowing
+build:ios_armv7 --config=ios
+build:ios_armv7 --cpu=ios_armv7
+build:ios_arm64 --config=ios
+build:ios_arm64 --cpu=ios_arm64
+build:ios_arm64e --config=ios
+build:ios_arm64e --cpu=ios_arm64e
+build:ios_sim_arm64 --config=ios
+build:ios_sim_arm64 --cpu=ios_sim_arm64
+build:ios_x86_64 --config=ios
+build:ios_x86_64 --cpu=ios_x86_64
+build:ios_fat --config=ios
+build:ios_fat --ios_multip_cpus=arm7,arm64,i386,x86_64
 
 
