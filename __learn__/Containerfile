@@ -26,5 +26,4 @@ RUN chmod -R +x . && \
   eval "${PIP_INSTALL} keras_preprocessing --no-deps" && \
   ./configure && \
   $(which bazelisk) build --config=monolithic //${TF}/tools/pip_package:build_pip_package && \
-  mkdir ${TEMP_TF} && \
-  PATH=${PATH}:${VENV_DIR}/bin eval ${BUILD_PIP_PACKAGE}
+  mkdir ${TEMP_TF}
