@@ -43,9 +43,12 @@ limitations under the License.
 #include "xla/service/service_executable_run_options.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "tsl/lib/gtl/int_type.h"
 
 namespace xla {
 namespace gpu {
+
+TSL_LIB_GTL_DEFINE_INT_TYPE(ExecutionStreamId, int64_t);
 
 // Thunk acts as the bridge between IrEmitter and GpuExecutable. It stores the
 // metadata IrEmitter generates for GpuExecutable to invoke an HloInstruction.
@@ -75,6 +78,9 @@ namespace gpu {
 // different threads and coordinate resource acquisition via rendezvous.
 class Thunk {
  public:
+  using ExecutionStreamIdMap =
+      absl::flat_hash_map<ExecutionStreamId, se::Stream*>;
+
   enum Kind {
     kCholesky,
     kConditional,
@@ -122,7 +128,8 @@ class Thunk {
     kSendDone,
     kTriangularSolve,
     kWhile,
-    kFusedMHA
+    kFusedMHA,
+    kWaitForStreams
   };
 
   // TODO(ezhulenev): This should become a part of StreamExecutor library, but
@@ -143,6 +150,8 @@ class Thunk {
     // TODO(b/304613751): This is only needed by the LMHLO. Remove this when
     // LMHLO is removed from the runtime pipeline.
     mlir::Operation* op;
+
+    ExecutionStreamId execution_stream_id = Thunk::GetMainComputeStreamId();
   };
 
   //===--------------------------------------------------------------------===//
@@ -239,6 +248,9 @@ class Thunk {
   // InitializeParams
   //===--------------------------------------------------------------------===//
 
+  // TODO(ezhulenev): Merge InitializeParams and ExecuteParams as they have
+  // almost the same members and tightly coupled.
+
   // Parameters passed to Initialize. At thunk initialization time we do not
   // launch any "work" on device and only initialize thunks for execution, i.e.
   // we pre-load kernels on device and instantiate all command buffers.
@@ -260,7 +272,7 @@ class Thunk {
     se::Stream* command_buffer_trace_stream = nullptr;
 
     // Parameters for executing collective operations.
-    const CollectiveExecuteParams* collective_params = nullptr;
+    CollectiveExecuteParams* collective_params = nullptr;
 
     // Collective cliques acquired based on resource requests.
     CollectiveCliques* collective_cliques = nullptr;
@@ -276,13 +288,14 @@ class Thunk {
   struct ExecuteParams {
     // Constructs execute parameters from an executable run options. Return
     // error if run options are misconfigured.
-    static ExecuteParams Create(const ServiceExecutableRunOptions& run_options,
-                                const BufferAllocations& buffer_allocations,
-                                se::Stream* stream,
-                                se::Stream* command_buffer_trace_stream,
-                                absl::Span<se::Stream* const> async_streams,
-                                CollectiveExecuteParams* collective_params,
-                                CollectiveCliques* collective_cliques);
+    static ExecuteParams Create(
+        const ServiceExecutableRunOptions& run_options,
+        const BufferAllocations& buffer_allocations, se::Stream* stream,
+        se::Stream* command_buffer_trace_stream,
+        absl::Span<se::Stream* const> async_streams,
+        CollectiveExecuteParams* collective_params,
+        CollectiveCliques* collective_cliques,
+        ExecutionStreamIdMap additional_compute_streams = {});
 
     const BufferAllocations* buffer_allocations;  // never null
 
@@ -311,7 +324,12 @@ class Thunk {
     SendDeviceMemoryFunction* send_device_memory_function;
     RecvDeviceMemoryFunction* recv_device_memory_function;
 
+    // Additional compute streams on which thunks launch operations.
+    ExecutionStreamIdMap additional_compute_streams;
+
    private:
+    friend class CommandBufferThunk;
+
     ExecuteParams(const BufferAllocations* buffer_allocations,
                   se::Stream* stream, se::Stream* command_buffer_trace_stream,
                   absl::InlinedVector<se::Stream*, 4> async_comms_streams,
@@ -320,7 +338,8 @@ class Thunk {
                   se::Stream* device_to_host_stream,
                   se::Stream* host_to_device_stream,
                   SendDeviceMemoryFunction* send_device_memory_function,
-                  RecvDeviceMemoryFunction* recv_device_memory_function);
+                  RecvDeviceMemoryFunction* recv_device_memory_function,
+                  ExecutionStreamIdMap additional_compute_streams = {});
   };
 
   //===--------------------------------------------------------------------===//
@@ -331,7 +350,8 @@ class Thunk {
   Thunk(Kind kind, ThunkInfo thunk_info)
       : kind_(kind),
         profile_annotation_(thunk_info.profile_annotation),
-        op_(thunk_info.op) {}
+        op_(thunk_info.op),
+        execution_stream_id_(thunk_info.execution_stream_id) {}
   virtual ~Thunk() = default;
   Thunk(const Thunk&) = delete;
   Thunk& operator=(const Thunk&) = delete;
@@ -377,10 +397,20 @@ class Thunk {
 
   static absl::string_view KindToString(Thunk::Kind kind);
 
+  ExecutionStreamId execution_stream_id() const { return execution_stream_id_; }
+
+  static absl::StatusOr<se::Stream*> GetStreamForExecution(
+      ExecutionStreamId stream_id, const ExecuteParams& params);
+
+  static ExecutionStreamId GetMainComputeStreamId() {
+    return ExecutionStreamId(0);
+  }
+
  private:
   Kind kind_;
   std::string profile_annotation_;
   mlir::Operation* op_;
+  ExecutionStreamId execution_stream_id_;
 };
 
 // A sequence of thunks.
