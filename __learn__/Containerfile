@@ -7,7 +7,7 @@ ENV VENV_DIR=/${SOURCE_DIR}/.venv
 ENV BOOT_VIRTUAL_ENV='python3 -m venv ${VENV_DIR} && . ${VENV_DIR}/bin/activate'
 ENV PIP_INSTALL='python3 -m pip install -U --trusted-host pypi.org --trusted-host files.pythonhosted.org'
 ENV BUILD_PIP_PACKAGE='${SOURCE_DIR}/bazel-bin/${TF}/tools/pip_package/build_pip_package'
-ENV TEMP_TF=${MY_WORKSPACE}/tmp
+ENV TEMP_TF=/${MY_WORKSPACE}/tmp
 RUN apt update -y && \
   apt install -y apt-transport-https ca-certificates && \
   dpkg-reconfigure ca-certificates && \
