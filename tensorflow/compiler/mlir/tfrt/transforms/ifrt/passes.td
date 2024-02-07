@@ -53,3 +53,35 @@ def SinkVariableAsNamedArrayPass: Pass<"sink-variable-as-named-array", "mlir::Mo
 
   let constructor = "CreateSinkVariableAsNamedArrayPass()";
 }
+
+def TfRestoreSplittingPass
+    : Pass<"tf-restore-splitting", "mlir::func::FuncOp"> {
+  let summary = "Splits `tf.RestoreV2` ops";
+
+  let description = [{
+    This pass splits each `tf.RestoreV2` op so that one restore op handles one
+    variable only. This pass can split restore ops only if the tensor names and
+    the shape/slices arguments are constants, which is usually the case.
+
+    Splitting monolithic restore ops into per-tensor restore ops makes it easier
+    to shard SavedModel initialization across multiple clusters.
+  }];
+
+  let constructor = "CreateTfRestoreSplittingPass()";
+}
+
+def TfRestoreMergingPass : Pass<"tf-restore-merging", "mlir::func::FuncOp"> {
+  let summary = "Merges `tf.RestoreV2` ops";
+
+  let description = [{
+    This pass merges multiple `tf.RestoreV2` ops into one `tf.RestoreV2` op
+    using variadic results. The current implementation merges restore ops only
+    if they have the same `prefix` and have constant tensor names and
+    shape/slice arguments.
+
+    This pass is run in order to undo `tf-restore-splitting` after cluster
+    formation and reduce the op dispatch overhead.
+  }];
+
+  let constructor = "CreateTfRestoreMergingPass()";
+}

@@ -335,11 +335,6 @@ class Stream {
     return absl::UnimplementedError("DNN library is not found.");
   }
 
-  Stream &ThenDepthConcatenate(
-      absl::Span<const dnn::BatchDescriptor> input_dimensions,
-      absl::Span<const DeviceMemory<float> *const> input_data,
-      DeviceMemory<float> *output_data);
-
   /////////////////
   // BLAS support
 
@@ -507,56 +502,6 @@ class Stream {
   template <typename T>
   using DeviceMemorySlice = absl::Span<DeviceMemory<T> *const>;
 
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, float alpha, DeviceMemorySlice<Eigen::half> a, int lda,
-      DeviceMemorySlice<Eigen::half> b, int ldb, float beta,
-      DeviceMemorySlice<Eigen::half> c, int ldc, int batch_count,
-      const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, float alpha, DeviceMemorySlice<Eigen::bfloat16> a, int lda,
-      DeviceMemorySlice<Eigen::bfloat16> b, int ldb, float beta,
-      DeviceMemorySlice<Eigen::bfloat16> c, int ldc, int batch_count,
-      const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, float alpha, DeviceMemorySlice<float> a, int lda,
-      DeviceMemorySlice<float> b, int ldb, float beta,
-      DeviceMemorySlice<float> c, int ldc, int batch_count,
-      const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, double alpha, DeviceMemorySlice<double> a, int lda,
-      DeviceMemorySlice<double> b, int ldb, double beta,
-      DeviceMemorySlice<double> c, int ldc, int batch_count,
-      const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, std::complex<float> alpha,
-      DeviceMemorySlice<std::complex<float>> a, int lda,
-      DeviceMemorySlice<std::complex<float>> b, int ldb,
-      std::complex<float> beta, DeviceMemorySlice<std::complex<float>> c,
-      int ldc, int batch_count, const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
-  Stream &ThenBlasGemmBatchedWithScratch(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, std::complex<double> alpha,
-      DeviceMemorySlice<std::complex<double>> a, int lda,
-      DeviceMemorySlice<std::complex<double>> b, int ldb,
-      std::complex<double> beta, DeviceMemorySlice<std::complex<double>> c,
-      int ldc, int batch_count, const NumericOptions &numeric_options,
-      ScratchAllocator *scratch_allocator, blas::CallContext context);
-
   template <typename InputType, typename OutputType, typename ConstantType>
   absl::Status ThenBlasGemmStridedBatched(
       blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
@@ -671,25 +616,6 @@ class Stream {
   // Otherwise returns an error describing why the blocking failed.
   absl::Status BlockHostUntilDone() TF_LOCKS_EXCLUDED(mu_);
 
-  // Warning! This method interacts with internal threads in
-  // sometimes-unpredictable ways and is intended for GPU-Executor-internal
-  // use
-  // only. Please check with a member of the FASTR team before making use of
-  // this method.
-  //
-  // Entrains onto the stream a function to be executed on the host at some
-  // point in the future.
-  // Async host callbacks DO NOT block the stream as device functions (or as
-  // synchronous host callbacks). No synchronization is possible with
-  // asynchronous callbacks; they are strictly fire-and-forget.
-  // This method is private due to the potential for undefined behavior with
-  // synchronization using OpenCL user events.
-  // The ONLY lifetime guarantee in these calls is that the StreamExecutor
-  // parameter will still be valid - this Stream may not be!
-  // Any callbacks requiring device API calls must use this method.
-  Stream &ThenEnqueueOnBackgroundThread(
-      std::function<void(StreamExecutor *)> task);
-
   // Returns the (opaque) platform-specific backing object. Ownership is not
   // transferred to the caller.
   internal::StreamInterface *implementation() { return implementation_.get(); }
@@ -742,9 +668,6 @@ class Stream {
   std::variant<StreamPriority, int> priority() const;
 
  private:
-  template <typename... Args>
-  friend struct ThenBlasImpl;  // for implementing ThenBlasXXX.
-
   // Checks whether types match before a call to extended BLAS version.
   template <typename ABType, typename CType, typename ScaleType>
   absl::Status CheckTypesForExtendedBlas(
