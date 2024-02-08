@@ -25,9 +25,9 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "absl/cleanup/cleanup.h"
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
@@ -47,7 +47,7 @@ limitations under the License.
 #include "xla/service/gpu/nccl_clique.h"
 #include "xla/service/gpu/nccl_clique_key.h"
 #include "xla/service/gpu/non_atomically_upgradeable_rw_lock.h"
-#include "xla/service/gpu/runtime/tracing.h"
+#include "xla/service/gpu/runtime3/annotation.h"
 #include "xla/service/gpu/stream_executor_util.h"
 #include "xla/service/gpu/thunk.h"
 #include "xla/service/hlo_parser.h"
@@ -93,6 +93,8 @@ class GpuTimer {};
 namespace xla {
 namespace gpu {
 
+using ::tsl::profiler::ScopedAnnotation;
+
 bool IsXlaRuntimeExecutableEnabled(const HloModuleConfig& config) {
   bool enabled = config.debug_options().xla_gpu_enable_xla_runtime_executable();
   if (enabled) {
@@ -106,11 +108,7 @@ bool IsXlaRuntimeExecutableEnabled(const HloModuleConfig& config) {
   return false;
 }
 
-namespace {
-
-using ::tsl::profiler::ScopedAnnotation;
-
-bool NeedsAsyncCommsStream(Thunk& thunk) {
+static bool NeedsAsyncCommsStream(Thunk& thunk) {
   switch (thunk.kind()) {
     case Thunk::Kind::kNcclAllReduceStart:
     case Thunk::Kind::kNcclAllReduceDone:
@@ -120,14 +118,34 @@ bool NeedsAsyncCommsStream(Thunk& thunk) {
   }
 }
 
-}  // namespace
+// Traverses operations in HLO module and collects execution stream ids
+// requested by HLO operations. At run time thunks may use additional streams to
+// launch compute operations in addition to a main one.
+//
+// TODO(ezhulenev): Execution stream requirements should be queried from thunks
+// directly and not from HLO module that might be missing.
+static absl::flat_hash_set<ExecutionStreamId> GetExecutionStreamIds(
+    const HloModule& module) {
+  absl::flat_hash_set<ExecutionStreamId> stream_ids;
+  for (const HloComputation* comp : module.computations()) {
+    for (const HloInstruction* hlo : comp->instructions()) {
+      if (hlo->has_backend_config() &&
+          hlo->backend_config<GpuBackendConfig>().ok()) {
+        int64_t op_queue_id = hlo->backend_config<GpuBackendConfig>()
+                                  .value()
+                                  .operation_queue_id();
+        if (op_queue_id > 0) {
+          stream_ids.insert(ExecutionStreamId(op_queue_id));
+        }
+      }
+    }
+  }
+  return stream_ids;
+}
 
 absl::StatusOr<std::unique_ptr<GpuExecutable>> GpuExecutable::Create(
     Params params) {
-  auto executable = std::move(params.executable);
-  std::unique_ptr<GpuExecutable> result(new GpuExecutable(std::move(params)));
-  result->thunks_ = std::move(executable);
-  return result;
+  return std::unique_ptr<GpuExecutable>(new GpuExecutable(std::move(params)));
 }
 
 // Implementation note: HLO profiling is always enabled for GPU executables,
@@ -137,6 +155,10 @@ GpuExecutable::GpuExecutable(GpuExecutable::Params params)
       text_(std::move(params.asm_text)),
       binary_(std::move(params.binary)),
       gpu_version_(params.gpu_version),
+      thunks_(std::move(params.executable)),
+      execution_stream_ids_(has_module()
+                                ? GetExecutionStreamIds(module())
+                                : absl::flat_hash_set<ExecutionStreamId>()),
       module_name_(params.module_name),
       output_shape_(params.output_shape),
       allocations_(std::move(params.mlir_allocations)),
@@ -280,28 +302,8 @@ absl::Status MaybeSyncAndProfile(
     std::optional<se::gpu::GpuTimer> execution_timer,
     se::Stream* stream_to_sync);
 
-absl::Status MaybeRendezvousAfterInitialization(
-    const ServiceExecutableRunOptions* run_options,
-    RendezvousSingleFlag& thunks_initialized);
-
-absl::flat_hash_set<ExecutionStreamId> ExtractAdditionalComputeStreamIds(
-    const HloModule& module) {
-  absl::flat_hash_set<ExecutionStreamId> stream_ids;
-  for (const HloComputation* comp : module.computations()) {
-    for (const HloInstruction* hlo : comp->instructions()) {
-      if (hlo->has_backend_config() &&
-          hlo->backend_config<GpuBackendConfig>().ok()) {
-        int64_t op_queue_id = hlo->backend_config<GpuBackendConfig>()
-                                  .value()
-                                  .operation_queue_id();
-        if (op_queue_id > 0) {
-          stream_ids.insert(ExecutionStreamId(op_queue_id));
-        }
-      }
-    }
-  }
-  return stream_ids;
-}
+absl::Status RendezvousAfterInitialization(
+    const ServiceExecutableRunOptions* run_options);
 
 absl::Status ExecuteThunks(
     const std::string& module_name, ModuleIdentifier module_id,
@@ -310,8 +312,7 @@ absl::Status ExecuteThunks(
     const ServiceExecutableRunOptions* run_options,
     const BufferAllocations& buffer_allocations, bool block_host_until_done,
     bool use_highest_priority_for_async_stream,
-    RendezvousSingleFlag& thunks_initialized,
-    absl::flat_hash_set<ExecutionStreamId> additional_compute_stream_ids) {
+    const absl::flat_hash_set<ExecutionStreamId>& execution_stream_ids) {
   se::Stream* main_stream = run_options->stream();
   se::StreamExecutor* executor = main_stream->parent();
   stream_executor::StreamPriority stream_priority =
@@ -341,21 +342,21 @@ absl::Status ExecuteThunks(
   }
 
   // Borrow stream for additional compute streams
-  Thunk::ExecutionStreamIdMap additional_compute_streams;
+  Thunk::ExecutionStreamIdMap additional_execution_streams;
   std::vector<StreamPool::Ptr> additional_streams;
-  int num_streams = additional_compute_stream_ids.size();
-  if (num_streams > 0) {
-    TF_ASSIGN_OR_RETURN(
-        additional_streams,
-        run_options->BorrowStreams(executor->device_ordinal(), num_streams));
-
+  if (!execution_stream_ids.empty()) {
+    TF_ASSIGN_OR_RETURN(additional_streams, run_options->BorrowStreams(
+                                                executor->device_ordinal(),
+                                                execution_stream_ids.size()));
     int64_t i = 0;
-    for (auto& stream : additional_compute_stream_ids) {
-      additional_compute_streams[stream] = additional_streams.at(i).get();
+    for (ExecutionStreamId stream_id : execution_stream_ids) {
+      additional_execution_streams[stream_id] = additional_streams.at(i).get();
       i++;
     }
-    VLOG(2) << "Using " << num_streams << " additional compute streams.";
+    VLOG(2) << "Using " << additional_execution_streams.size()
+            << " additional compute streams.";
   }
+
   tsl::profiler::TraceMe hlo_module_activity(
       [&] { return absl::StrCat(module_name, ":XLA GPU module"); },
       tsl::profiler::TraceMeLevel::kInfo);
@@ -409,15 +410,14 @@ absl::Status ExecuteThunks(
   // only in presence of collective cliques which means that we have collective
   // operations in the XLA operations that tend to cause deadlocks.
   if (!collective_cliques.empty()) {
-    TF_RETURN_IF_ERROR(
-        MaybeRendezvousAfterInitialization(run_options, thunks_initialized));
+    TF_RETURN_IF_ERROR(RendezvousAfterInitialization(run_options));
   }
 
   // Prepare parameters for thunks execution.
   Thunk::ExecuteParams execute_params = Thunk::ExecuteParams::Create(
       *run_options, buffer_allocations, main_stream,
       command_buffer_trace_stream, async_comms_streams, &collective_params,
-      &collective_cliques, additional_compute_streams);
+      &collective_cliques, additional_execution_streams);
 
   for (const std::unique_ptr<Thunk>& thunk : thunk_sequence) {
     // Annotate execution of this op if tracing was enabled when we started
@@ -456,9 +456,8 @@ bool operator==(const InitializationKey& a, const InitializationKey& b) {
 }
 }  // namespace
 
-absl::Status MaybeRendezvousAfterInitialization(
-    const ServiceExecutableRunOptions* run_options,
-    RendezvousSingleFlag& thunks_initialized) {
+absl::Status RendezvousAfterInitialization(
+    const ServiceExecutableRunOptions* run_options) {
   // Thunk initialization can allocate new control data structures on device
   // that can lead to deadlocks if other replicas are executing concurrently
   // (i.e. this happens if we try to instantiate CUDA graph when other replica
@@ -471,9 +470,6 @@ absl::Status MaybeRendezvousAfterInitialization(
   // If we don't have Gpu executable options or device assignment it means we
   // are running in a single Gpu config and don't need a rendezvous.
   if (!gpu_opts || !device_assn) return absl::OkStatus();
-
-  // Return if thunk initialization was already completed.
-  if (thunks_initialized.IsCompleted()) return absl::OkStatus();
 
   // Assume that all participants execute locally first, if we have a local
   // device id to global device id map we will use it to get the real number of
@@ -500,15 +496,21 @@ absl::Status MaybeRendezvousAfterInitialization(
           << num_local_participants << " local participants"
           << "; device_ordinal=" << run_options->device_ordinal();
 
+  tsl::profiler::TraceMe trace([&] {
+    return tsl::profiler::TraceMeEncode(
+        "RendezvousAfterInitialization",
+        {{"run_id", run_options->run_options().run_id().ToInt()},
+         {"num_local_participants", num_local_participants}});
+  });
+
   auto rendezvous_key = InitializationKey{run_options->run_options().run_id()};
   auto rendezvous_name = absl::StrFormat(
       "thunk initialization completion for device ordinal %d; run_id=%d",
       run_options->device_ordinal(),
       run_options->run_options().run_id().ToInt());
 
-  RendezvousSingle(thunks_initialized, rendezvous_name, rendezvous_key,
-                   num_local_participants, absl::Seconds(10),
-                   absl::Seconds(30));
+  RendezvousSingle(rendezvous_name, rendezvous_key, num_local_participants,
+                   absl::Seconds(10), absl::Seconds(30));
 
   return absl::OkStatus();
 }
@@ -937,17 +939,9 @@ absl::Status GpuExecutable::ExecuteThunksOrXlaRuntime(
       CheckCompatibilityWithServiceExecutableRunOptions(run_options));
 
   ScopedAnnotation annotation([&] { return module_annotations_.top_level; });
-  absl::Cleanup annotations_cleanup =
-      [previous = SetCurrentModuleAnnotations(&module_annotations_)] {
-        SetCurrentModuleAnnotations(previous);
-      };
+  ScopedModuleAnnotations module_annotations(&module_annotations_);
 
   ModuleIdentifier unique_id = has_module() ? module().unique_id() : -1;
-
-  absl::flat_hash_set<ExecutionStreamId> additional_compute_stream_ids;
-  if (has_module()) {
-    additional_compute_stream_ids = ExtractAdditionalComputeStreamIds(module());
-  }
 
   if (thunks_) {
     Thunk::ExecutableSource executable_source = {text_, binary_};
@@ -960,7 +954,7 @@ absl::Status GpuExecutable::ExecuteThunksOrXlaRuntime(
                            .debug_options()
                            .xla_gpu_enable_highest_priority_async_stream()
                      : false,
-        thunks_initialized_flag_, additional_compute_stream_ids);
+        execution_stream_ids_);
   }
 
   return FailedPrecondition("Expected XLA gpu executable is not supplied.");
