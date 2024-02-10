@@ -22,12 +22,15 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/gpu/runtime3/sequential_thunk.h"
 #include "xla/service/gpu/thunk.h"
 #include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/memory_allocation.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -57,6 +60,14 @@ absl::Status WhileThunk::Prepare(const PrepareParams& params,
 absl::Status WhileThunk::Initialize(const InitializeParams& params) {
   TF_RETURN_IF_ERROR(condition_thunk_sequence_->Initialize(params));
   TF_RETURN_IF_ERROR(body_thunk_sequence_->Initialize(params));
+
+  absl::MutexLock lock(&mutex_);
+  if (auto it = predicates_.find(params.executor); it == predicates_.end()) {
+    TF_ASSIGN_OR_RETURN(std::unique_ptr<se::MemoryAllocation> allocation,
+                        params.executor->HostMemoryAllocate(sizeof(bool)));
+    predicates_.emplace(params.executor, std::move(allocation));
+  }
+
   return absl::OkStatus();
 }
 
@@ -78,22 +89,28 @@ absl::Status WhileThunk::ExecuteOnStream(const ExecuteParams& params) {
 
   int64_t iter = 0;
 
+  // Get memory allocation for copying condition result from device.
+  bool* condition_result = [&] {
+    absl::MutexLock lock(&mutex_);
+    return reinterpret_cast<bool*>(predicates_.at(stream.parent())->opaque());
+  }();
+
   while (true) {
     VLOG(3) << "Executing WhileThunk condition computation; iter=" << iter;
     TF_RETURN_IF_ERROR(condition_thunk_sequence_->ExecuteOnStream(params));
 
     // Copy the result of condition computation and break the loop if 'false'.
-    bool condition_result;
-    stream.ThenMemcpy(&condition_result, condition_result_data, sizeof(bool));
-    VLOG(3) << "condition_result = " << condition_result;
+    stream.ThenMemcpy(condition_result, condition_result_data, sizeof(bool));
+
     if (absl::Status blocked = stream.BlockHostUntilDone(); !blocked.ok()) {
       return absl::InternalError(absl::StrFormat(
           "Failed to complete all kernels launched on stream %p: %s", &stream,
           blocked.message()));
     }
 
-    if (!condition_result) {
-      VLOG(3) << "Break WHileThunk loop; iter=" << iter;
+    VLOG(3) << "condition_result = " << *condition_result;
+    if (!*condition_result) {
+      VLOG(3) << "Break WhileThunk loop; iter=" << iter;
       break;
     }
 
