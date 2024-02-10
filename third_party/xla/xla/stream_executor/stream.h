@@ -39,7 +39,6 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "xla/stream_executor/blas.h"
 #include "xla/stream_executor/device_memory.h"
-#include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/event.h"
 #include "xla/stream_executor/fft.h"
 #include "xla/stream_executor/kernel.h"
@@ -62,16 +61,7 @@ class DeviceMemoryBase;
 template <typename ElemT>
 class DeviceMemory;
 
-namespace dnn {
-class BatchDescriptor;
-class FilterDescriptor;
-class ConvolutionDescriptor;
-class ProfileResult;
-class AlgorithmDesc;
-}  // namespace dnn
-
 class StreamExecutor;
-class ScratchAllocator;
 
 namespace detail {
 
@@ -87,10 +77,6 @@ constexpr bool is_any_of() {
 }
 
 }  // namespace detail
-
-// Convert a type to the corresponding QuantizedActivationMode.
-template <typename ElementType>
-struct Quantization;
 
 // Represents a stream of dependent computations on a GPU device.
 //
@@ -220,53 +206,6 @@ class Stream {
   // must extend past the point at which it is marked complete!
   Stream &ThenRecordEvent(Event *event);
 
-  ////////////////
-  // DNN support
-  //
-  // See DnnSupport::* for comments on the following methods.
-
-  template <typename InputT, typename ScaleT, typename SideInputT,
-            typename BiasT, typename OutputT>
-  absl::Status FusedConvolveWithAlgorithm(
-      const dnn::BatchDescriptor &conv_input_descriptor,
-      const DeviceMemory<InputT> &conv_input_data, ScaleT conv_input_scale,
-      const dnn::FilterDescriptor &filter_descriptor,
-      const DeviceMemory<InputT> &filter_data,
-      const dnn::ConvolutionDescriptor &convolution_descriptor,
-      const DeviceMemory<SideInputT> &side_input_data, ScaleT side_input_scale,
-      const dnn::BatchDescriptor &bias_descriptor,
-      const DeviceMemory<BiasT> &biases, dnn::ActivationMode activation_mode,
-      const dnn::BatchDescriptor &output_descriptor,
-      DeviceMemory<OutputT> *output, ScratchAllocator *scratch_allocator,
-      const dnn::AlgorithmConfig &algorithm_config,
-      dnn::ProfileResult *output_profile_result) {
-    if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
-      return dnn->DoFusedConvolve(
-          this, dnn::ToDataType<InputT>::value,
-          dnn::ToDataType<SideInputT>::value, dnn::ToDataType<BiasT>::value,
-          dnn::ToDataType<OutputT>::value, conv_input_descriptor,
-          conv_input_data, conv_input_scale, filter_descriptor, filter_data,
-          convolution_descriptor, side_input_data, side_input_scale,
-          bias_descriptor, biases, activation_mode, output_descriptor, *output,
-          scratch_allocator, algorithm_config, output_profile_result);
-    }
-    return absl::UnimplementedError("DNN library is not found.");
-  }
-
-  absl::Status CudnnReorderConvolutionFilterAndBias(
-      const dnn::FilterDescriptor &filter_descriptor,
-      const DeviceMemory<int8_t> &filter_input,
-      DeviceMemory<int8_t> *filter_output,
-      std::optional<const DeviceMemory<float>> bias_input,
-      std::optional<DeviceMemory<float>> bias_output) {
-    if (dnn::DnnSupport *dnn = parent_->AsDnn()) {
-      return dnn->CudnnReorderConvolutionFilterAndBias(
-          this, filter_descriptor, filter_input, filter_output,
-          std::move(bias_input), std::move(bias_output));
-    }
-    return absl::UnimplementedError("DNN library is not found.");
-  }
-
   /////////////////
   // BLAS support
 
@@ -280,49 +219,14 @@ class Stream {
                             blas::CallContext context) {
     InputType alpha{1.0};
     InputType beta{0.0};
-    return ThenBlasGemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c,
-                        ldc, numeric_options, context);
-  }
-
-  template <typename InputType, typename OutputType, typename ConstantType>
-  absl::Status ThenBlasGemm(blas::Transpose transa, blas::Transpose transb,
-                            uint64_t m, uint64 n, uint64 k, ConstantType alpha,
-                            const DeviceMemory<InputType> &a, int lda,
-                            const DeviceMemory<InputType> &b, int ldb,
-                            ConstantType beta, DeviceMemory<OutputType> *c,
-                            int ldc, const NumericOptions &numeric_options,
-                            blas::CallContext context) {
-    static_assert(
-        detail::is_any_of<InputType, int8_t, Eigen::half, Eigen::bfloat16,
-                          float, double, std::complex<float>,
-                          std::complex<double>>(),
-        "Input can be int8_t, half, bf16, float, double, std::complex<float> "
-        "or "
-        "std::complex<double>");
-    static_assert(!std::is_same_v<InputType, Eigen::half> ||
-                      detail::is_any_of<ConstantType, float, Eigen::half>(),
-                  "If input is Eigen::half, constant has to be either "
-                  "Eigen::half or float");
-    static_assert(detail::is_any_of<InputType, int8_t, Eigen::half,
-                                    Eigen::bfloat16, ConstantType>(),
-                  "If input is not int8_t, Eigen::half, constant and input "
-                  "types have to match");
     blas::BlasSupport *blas = parent()->AsBlas();
     if (!blas) {
       return absl::InternalError(
           "Attempting to perform BLAS operation using "
           "StreamExecutor without BLAS support");
     }
-
-    void *alpha_ptr = &alpha;
-    void *beta_ptr = &beta;
-    float alpha_storage, beta_storage;
-    UpcastHalfToFloat<ConstantType>(&alpha_ptr, &beta_ptr, &alpha_storage,
-                                    &beta_storage);
-
-    return blas->DoBlasGemm(
-        this, transa, transb, m, n, k, blas::ToDataType<InputType>::value,
-        alpha_ptr, a, lda, b, ldb, beta_ptr, c, ldc, numeric_options, context);
+    return blas->BlasGemm(this, transa, transb, m, n, k, alpha, a, lda, b, ldb,
+                          beta, c, ldc, numeric_options, context);
   }
 
   // TODO(reedwm): Update all callers to pass correct NumericOptions.
@@ -333,8 +237,15 @@ class Stream {
                             const DeviceMemory<InputType> &b, int ldb,
                             ConstantType beta, DeviceMemory<OutputType> *c,
                             int ldc, blas::CallContext context) {
-    return ThenBlasGemm(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c,
-                        ldc, NumericOptions{}, context);
+    blas::BlasSupport *blas = parent()->AsBlas();
+    if (!blas) {
+      return absl::InternalError(
+          "Attempting to perform BLAS operation using "
+          "StreamExecutor without BLAS support");
+    }
+
+    return blas->BlasGemm(this, transa, transb, m, n, k, alpha, a, lda, b, ldb,
+                          beta, c, ldc, NumericOptions{}, context);
   }
 
   template <typename InputType, typename OutputType>
@@ -386,44 +297,6 @@ class Stream {
         blas::ToDataType<OutputType>::value, ldc, computation_type, algorithm,
         numeric_options, output_profile_result, context);
 
-    if (output_profile_result) {
-      // The error is recorded in the profile.
-      return absl::OkStatus();
-    }
-    return st;
-  }
-
-  template <typename InputType, typename OutputType, typename ConstantType>
-  absl::Status ThenBlasGemmStridedBatchedWithAlgorithm(
-      blas::Transpose transa, blas::Transpose transb, uint64_t m, uint64 n,
-      uint64_t k, ConstantType alpha, const DeviceMemory<InputType> &a, int lda,
-      int64_t stride_a, const DeviceMemory<InputType> &b, int ldb,
-      int64_t stride_b, ConstantType beta, DeviceMemory<OutputType> *c, int ldc,
-      int64_t stride_c, int batch_count, blas::ComputationType computation_type,
-      blas::AlgorithmType algorithm, const NumericOptions &numeric_options,
-      blas::ProfileResult *output_profile_result, blas::CallContext context) {
-    TF_RETURN_IF_ERROR(
-        CheckTypesForExtendedBlas<InputType, OutputType, ConstantType>(
-            computation_type));
-
-    blas::BlasSupport *blas = parent()->AsBlas();
-    if (!blas) {
-      return absl::InternalError(
-          "Attempting to perform BLAS operation using "
-          "StreamExecutor without BLAS support");
-    }
-    void *alpha_ptr = &alpha;
-    void *beta_ptr = &beta;
-    float alpha_storage, beta_storage;
-    UpcastHalfToFloat<ConstantType>(&alpha_ptr, &beta_ptr, &alpha_storage,
-                                    &beta_storage);
-    absl::Status st = blas->DoBlasGemmStridedBatchedWithAlgorithm(
-        this, transa, transb, m, n, k, alpha_ptr, a,
-        blas::ToDataType<InputType>::value, lda, stride_a, b,
-        blas::ToDataType<InputType>::value, ldb, stride_b, beta_ptr, c,
-        blas::ToDataType<OutputType>::value, ldc, stride_c, batch_count,
-        computation_type, algorithm, numeric_options, output_profile_result,
-        context);
     if (output_profile_result) {
       // The error is recorded in the profile.
       return absl::OkStatus();
@@ -530,15 +403,6 @@ class Stream {
   // by 4). The location must not be null.
   Stream &ThenMemset32(DeviceMemoryBase *location, uint32_t pattern,
                        uint64_t size);
-
-  // Enqueue onto the stream a operation that transforms a tensor.
-  // See DnnSupport::DoTransformTensor for more details.
-  Stream &ThenTransformTensor(const dnn::BatchDescriptor &input_desc,
-                              dnn::DataType input_type,
-                              const DeviceMemoryBase &input_data,
-                              const dnn::BatchDescriptor &output_desc,
-                              dnn::DataType output_type, float scale,
-                              DeviceMemoryBase *output_data);
 
   // (Synchronously) block the host code waiting for the operations
   // entrained on the stream (enqueued to this point in program
@@ -656,12 +520,6 @@ class Stream {
 
   void SetError() { CheckError(false /* = operation_retcode */); }
 
-  void SetErrorAndLogNoDnnSupport() {
-    SetError();
-    LOG(WARNING) << "attempting to perform DNN operation using StreamExecutor "
-                    "without DNN support";
-  }
-
   // The StreamExecutor that supports the operation of this stream.
   StreamExecutor *parent_;
 
@@ -724,7 +582,7 @@ inline absl::Status Stream::ThenLaunch(ThreadDim thread_dims,
                                        Args... args) {
   auto kernel_args = PackKernelArgs(kernel, args...);
   TF_RETURN_IF_ERROR(
-      parent_->Launch(this, thread_dims, block_dims, kernel, *kernel_args));
+      parent_->Launch(this, thread_dims, block_dims, *kernel, *kernel_args));
   return absl::OkStatus();
 }
 
@@ -735,7 +593,7 @@ inline absl::Status Stream::ThenLaunch(ThreadDim thread_dims,
                                        Args... args) {
   auto kernel_args = PackKernelArgs(shmem_bytes, args...);
   TF_RETURN_IF_ERROR(
-      parent_->Launch(this, thread_dims, block_dims, kernel, *kernel_args));
+      parent_->Launch(this, thread_dims, block_dims, *kernel, *kernel_args));
   return absl::OkStatus();
 }
 
@@ -747,7 +605,7 @@ inline absl::Status Stream::ThenLaunch(ThreadDim thread_dims,
                                        Args... args) {
   auto kernel_args = PackKernelArgs(kernel, args...);
   TF_RETURN_IF_ERROR(parent_->Launch(this, thread_dims, block_dims,
-                                     cluster_dims, kernel, *kernel_args));
+                                     cluster_dims, *kernel, *kernel_args));
   return absl::OkStatus();
 }
 
@@ -757,27 +615,9 @@ inline absl::Status Stream::ThenLaunch(
     int32_t shmem_bytes, const TypedKernel<Params...> &kernel, Args... args) {
   auto kernel_args = PackKernelArgs(shmem_bytes, args...);
   TF_RETURN_IF_ERROR(parent_->Launch(this, thread_dims, block_dims,
-                                     cluster_dims, kernel, *kernel_args));
+                                     cluster_dims, *kernel, *kernel_args));
   return absl::OkStatus();
 }
-
-template <>
-struct Quantization<uint8_t> {
-  static constexpr dnn::QuantizedActivationMode kModeId =
-      dnn::QuantizedActivationMode::k8Bit;
-};
-
-template <>
-struct Quantization<uint16_t> {
-  static constexpr dnn::QuantizedActivationMode kModeId =
-      dnn::QuantizedActivationMode::k16Bit;
-};
-
-template <>
-struct Quantization<int32_t> {
-  static constexpr dnn::QuantizedActivationMode kModeId =
-      dnn::QuantizedActivationMode::k32Bit;
-};
 
 }  // namespace stream_executor
 

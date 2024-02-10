@@ -372,9 +372,6 @@ se::GpuComputeCapability GetGpuVersion(const se::StreamExecutor* stream_exec) {
 
 class GpuThunkAotCompilationResult : public AotCompilationResult {
  public:
-  explicit GpuThunkAotCompilationResult(CompilationResultProto proto)
-      : proto_(std::move(proto)) {}
-
   static absl::StatusOr<std::unique_ptr<GpuThunkAotCompilationResult>>
   FromModule(const HloModule* hlo_module,
              const BufferAssignment* buffer_assignment,
@@ -385,7 +382,9 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
     *proto.mutable_buffer_assignment() = buffer_assignment->ToProto();
     proto.set_asm_text(std::string(asm_text));
     proto.set_binary(binary.data(), binary.size());
-    return std::make_unique<GpuThunkAotCompilationResult>(std::move(proto));
+    return std::unique_ptr<GpuThunkAotCompilationResult>(
+        new GpuThunkAotCompilationResult(hlo_module->Clone(),
+                                         std::move(proto)));
   }
 
   static absl::StatusOr<std::unique_ptr<GpuThunkAotCompilationResult>>
@@ -396,7 +395,11 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
           "Failed to parse serialized GpuThunkAotCompilationResult.");
     }
 
-    return std::make_unique<GpuThunkAotCompilationResult>(std::move(proto));
+    TF_ASSIGN_OR_RETURN(
+        std::unique_ptr<HloModule> module,
+        HloModule::CreateFromProtoWithConfig(proto.hlo_module_with_config()));
+    return std::unique_ptr<GpuThunkAotCompilationResult>(
+        new GpuThunkAotCompilationResult(std::move(module), std::move(proto)));
   }
 
   absl::StatusOr<std::string> SerializeAsString() const override {
@@ -406,7 +409,17 @@ class GpuThunkAotCompilationResult : public AotCompilationResult {
   absl::StatusOr<std::unique_ptr<Executable>> LoadExecutable(
       Compiler* compiler, const se::StreamExecutor* stream_exec) const override;
 
+  const HloModule* optimized_module() const override { return module_.get(); }
+  std::unique_ptr<HloModule> consume_optimized_module() override {
+    return std::move(module_);
+  }
+
  private:
+  GpuThunkAotCompilationResult(std::unique_ptr<HloModule> module,
+                               CompilationResultProto proto)
+      : module_(std::move(module)), proto_(std::move(proto)) {}
+
+  std::unique_ptr<HloModule> module_;
   CompilationResultProto proto_;
 };
 
@@ -1255,7 +1268,8 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     sub_pipeline.AddPass<FloatNormalization>(&f8e5m2fnuz_support);
     sub_pipeline.AddPass<FloatNormalization>(&f8e4m3fnuz_support);
     // Remove `f32 -> bf16 -> f32` casts inserted by bf16 normalization.
-    if (debug_options.xla_gpu_simplify_all_fp_conversions()) {
+    if (debug_options.xla_allow_excess_precision() &&
+        debug_options.xla_gpu_simplify_all_fp_conversions()) {
       sub_pipeline.AddPass<SimplifyFPConversions>(
           SimplifyFPConversions::Scope::kSimplifyAllConversions);
     }
@@ -1383,7 +1397,8 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
   // duplicate or NOPs, so remove them with algebraic simplification and CSE.
   pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(simplifier_options);
 
-  if (debug_options.xla_gpu_simplify_all_fp_conversions()) {
+  if (debug_options.xla_allow_excess_precision() &&
+      debug_options.xla_gpu_simplify_all_fp_conversions()) {
     // This pass cleans up chains of compiler-generated converts
     // (i.e. f32 -> bf16 -> f32) that have been produced by the algebraic
     // simplifier by rearranging ops (i.e. by pushing broadcasts towards the
@@ -1399,7 +1414,31 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
   pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true,
                            /*only_fusion_computations=*/false,
                            /*ignore_control_dependencies=*/true);
+
+#ifdef NDEBUG
+  // Verify the module in non-debug builds. For debug builds, the verifier
+  // already runs after every pass.
+  pipeline.AddPass<HloVerifier>(
+      std::make_unique<DefaultVerifierMetadata>(
+          HloVerifierOpts{}
+              .MakeLayoutSensitive()
+              .WithInstructionCanChangeLayout(
+                  LayoutAssignment::InstructionCanChangeLayout)
+              .VerifyBroadcastDimensionsOrder()
+              .VerifyReshapeIsBitcast()),
+      "end-of-post-layout_assignment");
+#endif  // NDEBUG
+
   TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+
+  if (DumpingEnabledForHloModule(*hlo_module)) {
+    TF_ASSIGN_OR_RETURN(
+        std::string autotune_results,
+        AutotunerUtil::SerializeAutotuneResultsForModule(
+            *hlo_module, autotune_config, /*as_textproto=*/true));
+    DumpToFileInDirOrStdout(*hlo_module, "", "autotune_results.pbtxt",
+                            autotune_results);
+  }
 
   return absl::OkStatus();
 }

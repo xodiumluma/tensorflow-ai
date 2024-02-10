@@ -63,9 +63,11 @@ filegroup(
         "device_options.h",
         "event.h",
         "executor_cache.h",
+        "host_memory_allocation.h",
         "kernel.h",
         "kernel_spec.h",
         "launch_dim.h",
+        "memory_allocation.h",
         "module_spec.h",
         "multi_platform_manager.h",
         "numeric_options.h",
@@ -217,6 +219,17 @@ cc_library(
 )
 
 cc_library(
+    name = "host_memory_allocation",
+    srcs = ["host_memory_allocation.cc"],
+    hdrs = ["host_memory_allocation.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":memory_allocation",
+        ":stream_executor_internal",  # TODO(b/323534971): Remove dependency on Interface.
+    ],
+)
+
+cc_library(
     name = "host_or_device_scalar",
     hdrs = ["host_or_device_scalar.h"],
     visibility = ["//visibility:public"],
@@ -228,6 +241,12 @@ cc_library(
     hdrs = ["launch_dim.h"],
     visibility = ["//visibility:public"],
     deps = ["@com_google_absl//absl/strings"],
+)
+
+cc_library(
+    name = "memory_allocation",
+    hdrs = ["memory_allocation.h"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -517,6 +536,7 @@ cc_library(
         ":stream_executor_headers",
         ":stream_executor_internal",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/memory",
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -525,6 +545,7 @@ cc_library(
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:platform_port",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -546,6 +567,7 @@ cc_library(
 
 transitive_hdrs(
     name = "stream_executor_install_hdrs",
+    tags = ["avoid_dep"],
     deps = [":stream_executor_headers"],
 )
 
@@ -559,12 +581,14 @@ cc_library(
         "stream_executor_pimpl.cc",
     ],
     hdrs = ["stream_executor_pimpl.h"],
+    tags = ["avoid_dep"],
     visibility = ["//visibility:public"],
     deps = [
         ":blas",  # build_cleaner: keep
         ":command_buffer",  # build_cleaner: keep
         ":dnn",  # build_cleaner: keep
         ":fft",
+        ":host_memory_allocation",
         ":kernel_spec",
         ":platform",
         ":stream_executor_headers",
@@ -629,6 +653,18 @@ xla_cc_test(
         "//xla/stream_executor/host:host_platform",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
+        "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+xla_cc_test(
+    name = "stream_executor_test",
+    srcs = ["stream_executor_test.cc"],
+    deps = [
+        ":stream_executor",
+        "//xla/stream_executor/host:host_platform",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
     ],
 )

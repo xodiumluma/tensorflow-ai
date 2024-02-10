@@ -34,7 +34,7 @@ cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/profiler/lib:nvtx_utils",
-        "@local_tsl//tsl/profiler/lib:scoped_annotation_stack",
+        "@local_tsl//tsl/profiler/lib:scoped_annotation",
     ],
 )
 
@@ -165,11 +165,14 @@ xla_test(
         "//xla/stream_executor:multi_platform_manager",
         "//xla/stream_executor:platform",
         "//xla/stream_executor/gpu:gpu_test_kernels",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_benchmark",
         "@local_tsl//tsl/platform:test_main",
     ],
 )
@@ -279,14 +282,23 @@ cc_library(
     deps = [
         ":sequential_thunk",
         "//xla:status",
+        "//xla:status_macros",
         "//xla:util",
         "//xla/hlo/ir:hlo",
+        "//xla/service:buffer_assignment",
         "//xla/service/gpu:buffer_allocations",
         "//xla/service/gpu:thunk",
+        "//xla/service/gpu:variant_visitor",
         "//xla/stream_executor",
+        "//xla/stream_executor:memory_allocation",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -718,10 +730,14 @@ cc_library(
         "//xla/service/gpu:buffer_allocations",
         "//xla/service/gpu:thunk",
         "//xla/stream_executor",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
