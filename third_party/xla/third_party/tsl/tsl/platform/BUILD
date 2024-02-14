@@ -25,6 +25,7 @@ load(
     "tf_stream_executor_deps",
     "tf_windows_aware_platform_deps",
     "tsl_cc_test",
+    "tsl_grpc_credentials_deps",
     "tsl_protobuf_deps",
 )
 load("//tsl/platform:build_config_root.bzl", "if_static")
@@ -192,15 +193,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@com_google_absl//absl/base:dynamic_annotations",
-    ],
-)
-
-cc_library(
-    name = "gif",
-    hdrs = ["gif.h"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@gif",
     ],
 )
 
@@ -624,7 +616,6 @@ filegroup(
         "error_logging.h",
         "fingerprint.h",
         "notification.h",
-        "png.h",
         "random.cc",
         "random.h",
         "test_benchmark.h",
@@ -643,15 +634,6 @@ filegroup(
 )
 
 filegroup(
-    name = "gif_hdrs",
-    srcs = [
-        "gif.h",
-    ],
-    compatible_with = get_compatible_with_portable(),
-    visibility = ["//visibility:public"],
-)
-
-filegroup(
     name = "legacy_lib_internal_headers",
     srcs = glob(
         [
@@ -659,9 +641,6 @@ filegroup(
         ],
         exclude = [
             "dynamic_annotations.h",
-            "gif.h",
-            "png.h",
-            "jpeg.h",
         ],
     ) + [
         "//tsl/platform/profile_utils:android_armv7a_cpu_utils_helper.h",
@@ -691,6 +670,7 @@ exports_files(
         "file_system.h",
         "file_system_helper.cc",
         "file_system_helper.h",
+        "grpc_credentials.h",
         "host_info.h",
         "human_readable_json.h",
         "init_main.h",
@@ -753,24 +733,6 @@ filegroup(
     ],
     compatible_with = get_compatible_with_portable(),
     visibility = ["//visibility:public"],
-)
-
-filegroup(
-    name = "jpeg_hdrs",
-    srcs = [
-        "jpeg.h",
-    ],
-    compatible_with = get_compatible_with_portable(),
-    visibility = ["//visibility:public"],
-)
-
-cc_library(
-    name = "jpeg",
-    hdrs = ["jpeg.h"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@libjpeg_turbo//:jpeg",
-    ],
 )
 
 filegroup(
@@ -1057,8 +1019,6 @@ cc_library(
     deps = [
         ":byte_order",
         ":fingerprint",
-        ":gif",
-        ":jpeg",
         ":macros",
         ":net",
         ":platform",
@@ -1118,6 +1078,14 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ] + tf_error_logging_deps(),
+)
+
+cc_library(
+    name = "grpc_credentials",
+    compatible_with = get_compatible_with_portable(),
+    textual_hdrs = ["grpc_credentials.h"],
+    visibility = ["//visibility:public"],
+    deps = tsl_grpc_credentials_deps(),
 )
 
 cc_library(
@@ -1446,17 +1414,6 @@ cc_library(
     deps = [
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
-    ],
-)
-
-cc_library(
-    name = "png",
-    hdrs = ["png.h"],
-    compatible_with = get_compatible_with_portable(),
-    visibility = ["//visibility:public"],
-    deps = [
-        ":platform",
-        "@png",
     ],
 )
 

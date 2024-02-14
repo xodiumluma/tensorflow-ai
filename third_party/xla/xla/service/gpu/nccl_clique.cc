@@ -22,7 +22,6 @@ limitations under the License.
 #include <string>
 #include <tuple>
 #include <utility>
-#include <vector>
 
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
@@ -40,7 +39,6 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/debug_options_flags.h"
 #include "xla/executable_run_options.h"
-#include "xla/service/global_device_id.h"
 #include "xla/service/gpu/nccl_api.h"
 #include "xla/service/gpu/nccl_clique_key.h"
 #include "xla/service/lockable.h"
@@ -233,17 +231,36 @@ static void StartNcclCliqueHeartBeatMonitor() {
 
 // NcclClique initialization must be executed together by all participants, and
 // we rely on rendezvous to guarantee that all ranks are ready to initialize
-// NCCL communicators.
+// NCCL communicators. We also have an additional level of synchronization to
+// guarantee that we do at most one clique initialization at a time.
 
 namespace {
+
+struct InitializationGuardName {
+  static std::string ToString(std::nullopt_t) {
+    return absl::StrFormat("clique initilization guard");
+  }
+};
+
+// An in-process singleton that guards collective cliques initialization as
+// multiple concurrent initializations lead to deadlocks (in NCCL).
+struct InitializationGuard
+    : public Lockable<std::nullopt_t, InitializationGuardName> {
+  InitializationGuard() : Lockable(std::nullopt) {}
+};
+
 // Local (in-process) NCCL clique initialization state. Once initialization is
 // complete NCCL clique added to the NcclCliques container (see above).
 struct InitializationState {
   using Ranks = absl::Span<const int32_t* const>;
-  InitializationState(NcclCliqueId clique_id, Ranks ranks);
+  InitializationState(NcclCliqueId clique_id, Ranks ranks,
+                      InitializationGuard::Lock lock);
 
   NcclCliqueId clique_id;
   absl::node_hash_map<int32_t, absl::StatusOr<NcclApi::OwnedNcclComm>> comms;
+
+  // Guards initialization of NCCL cliques.
+  InitializationGuard::Lock lock;
 
   // Signals when all participants updated entries in `comms`.
   std::unique_ptr<absl::Barrier> ready;
@@ -251,8 +268,16 @@ struct InitializationState {
 
 }  // namespace
 
-InitializationState::InitializationState(NcclCliqueId clique_id, Ranks ranks)
-    : clique_id(clique_id), ready(new absl::Barrier(ranks.size())) {
+static InitializationGuard::Lock AcquireInitializationGuard() {
+  static auto* guard = new InitializationGuard();
+  return guard->Acquire();
+}
+
+InitializationState::InitializationState(NcclCliqueId clique_id, Ranks ranks,
+                                         InitializationGuard::Lock lock)
+    : clique_id(clique_id),
+      lock(std::move(lock)),
+      ready(new absl::Barrier(ranks.size())) {
   // Initialize `comms` for all ranks so that each participating thread can
   // write into it without synchronization.
   for (const int32_t* rank : ranks) {
@@ -278,9 +303,12 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
   // Creates initialization state for participating ranks.
   auto create_initialization_state = [&](absl::Span<const int32_t* const> ranks)
       -> absl::StatusOr<InitializationState> {
+    VLOG(3) << "Acquire initialization guard for clique "
+            << clique_key.ToString();
+    auto lock = AcquireInitializationGuard();
     TF_ASSIGN_OR_RETURN(auto clique_id, clique_id_callback(clique_key));
     VLOG(3) << "Created unique clique id (hash): " << absl::HashOf(clique_id);
-    return InitializationState(clique_id, ranks);
+    return InitializationState(clique_id, ranks, std::move(lock));
   };
 
   // We include `run_id` to a rendezvous key to make sure that multiple
@@ -300,15 +328,19 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
                           WarnStuckTimeout(), TerminateTimeout()));
 
   VLOG(3) << "Create NCCL communicator for clique " << clique_key.ToString()
-          << " rank #" << rank << " of " << nranks
-          << "; num_local_participants=" << num_local_participants;
+          << " rank #" << rank << " of " << nranks;
 
   absl::StatusOr<NcclApi::OwnedNcclComm> comm =
       NcclApi::Default()->CommInitRank(nranks, state->clique_id, rank);
 
   if (comm.ok()) {
+    VLOG(3) << "Created NCCL communicator for clique " << clique_key.ToString()
+            << " rank #" << rank << " of " << nranks;
     state->comms[rank] = std::move(*comm);
   } else {
+    VLOG(3) << "Failed to create NCCL communicator for clique "
+            << clique_key.ToString() << " rank #" << rank << " of " << nranks
+            << "; error=" << comm.status();
     state->comms[rank] = comm.status();
   }
 
