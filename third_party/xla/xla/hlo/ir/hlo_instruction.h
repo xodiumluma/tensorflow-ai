@@ -1048,6 +1048,10 @@ class HloInstruction {
   // and returns the receive buffer. The operand must be kRecv.
   static std::unique_ptr<HloInstruction> CreateRecvDone(
       HloInstruction* operand, bool is_host_transfer = false);
+  // Similar to the above, but the operand doesn't have to be a kRecv.
+  static std::unique_ptr<HloInstruction> CreateRecvDone(
+      HloInstruction* operand, int64_t channel_id,
+      bool is_host_transfer = false);
 
   // Creates a slice instruction, where the operand is sliced by the given
   // start/limit indices.
@@ -1668,6 +1672,13 @@ class HloInstruction {
   // a bitcast.
   bool IsEffectiveBitcast() const;
 
+  // Returns true if this instruction is asynchronous with the
+  // async_execution_thread set to `execution_thread`.
+  bool IsAsyncInstructionWithExecutionThread(
+      absl::string_view execution_thread) const {
+    return IsAsynchronous() && async_execution_thread() == execution_thread;
+  };
+
   // Gets/sets the to_apply HloComputation for Call, Map, Reduce, etc.
   // The setter should only be called by HloModule or HloComputation methods.
   //
@@ -2097,11 +2108,7 @@ class HloInstruction {
 
   // Sets the debug metadata for this instruction, excluding creation_pass_id,
   // which should never be copied anywhere.
-  void set_metadata(const OpMetadata& metadata) {
-    int64_t creation_pass_id = metadata_->creation_pass_id();
-    *metadata_ = metadata;
-    metadata_->set_creation_pass_id(creation_pass_id);
-  }
+  void set_metadata(const OpMetadata& metadata) { *metadata_ = metadata; }
 
   void set_size_of_generated_code_in_bytes(int64_t code_size_in_bytes) {
     metadata_->set_size_of_generated_code_in_bytes(code_size_in_bytes);
@@ -2111,14 +2118,8 @@ class HloInstruction {
     metadata_->set_size_of_memory_working_set_in_bytes(
         working_set_size_in_bytes);
   }
-  void set_creation_pass_id(int64_t pass_id) {
-    metadata_->set_creation_pass_id(pass_id);
-  }
   void set_metadata_op_name(const std::string& name) {
     metadata_->set_op_name(name);
-  }
-  void set_logical_creation_pass_id(int64_t pass_id) {
-    metadata_->set_logical_creation_pass_id(pass_id);
   }
   void set_metadata_deduplicated_name(std::string deduplicated_name) {
     metadata_->set_deduplicated_name(std::move(deduplicated_name));
