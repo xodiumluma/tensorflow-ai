@@ -18,7 +18,6 @@ limitations under the License.
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <numeric>
 #include <optional>
 #include <ostream>
@@ -42,6 +41,7 @@ namespace xla {
 namespace gpu {
 namespace {
 
+using llvm::ArrayRef;
 using llvm::SmallBitVector;
 using llvm::SmallVector;
 using mlir::AffineBinaryOpExpr;
@@ -119,28 +119,42 @@ AffineExpr AffineExprSimplifier::RewriteMod(AffineBinaryOpExpr mod) {
   }
   int64_t m = rhs.lower_bound;
 
+  Range no_multiplier_range{0, 0};
+  int64_t multiplier_gcd = -1;
+
   auto new_lhs = RewriteSumIf(lhs_simplified, [&](AffineExpr expr) {
-    if (expr.getKind() != AffineExprKind::Mul) {
+    if (auto multiplier = GetConstantRhsMultiplier(expr)) {
+      if (*multiplier % m == 0) {
+        return false;
+      }
+
+      if (multiplier_gcd == -1) {
+        multiplier_gcd = *multiplier;
+      } else {
+        multiplier_gcd = std::gcd(multiplier_gcd, *multiplier);
+      }
       return true;
     }
-
-    auto mul_rhs = range_evaluator_->ComputeExpressionRange(
-        mlir::cast<AffineBinaryOpExpr>(expr).getRHS());
-    bool remove = mul_rhs.IsPoint() && (mul_rhs.lower_bound % m) == 0;
-    return !remove;  // We keep it if we don't remove it!
+    auto range = range_evaluator_->ComputeExpressionRange(expr);
+    no_multiplier_range.lower_bound += range.lower_bound;
+    no_multiplier_range.upper_bound += range.upper_bound;
+    return true;
   });
 
-  // If we weren't able to remove or simplify anything, return the original
-  // expression.
-  if (new_lhs == mod.getLHS()) {
-    return mod;
+  mlir::AffineExpr extracted = getAffineConstantExpr(0, mod.getContext());
+  if (m % multiplier_gcd == 0 && no_multiplier_range.lower_bound >= 0 &&
+      no_multiplier_range.upper_bound < multiplier_gcd) {
+    // Remove everything that doesn't have a multiplier.
+    new_lhs = RewriteSumIf(new_lhs, [&](AffineExpr expr) {
+      if (GetConstantRhsMultiplier(expr)) {
+        return true;
+      }
+      extracted = extracted + expr;
+      return false;
+    });
   }
-  // If we removed everything, return 0.
-  if (!new_lhs) {
-    return getAffineConstantExpr(0, range_evaluator_->GetMLIRContext());
-  }
-  // Otherwise, return new_sum % m.
-  return new_lhs % mod.getRHS();
+  if (!new_lhs) new_lhs = getAffineConstantExpr(0, mod.getContext());
+  return new_lhs % mod.getRHS() + extracted;
 }
 
 AffineExpr AffineExprSimplifier::RewriteFloorDiv(AffineBinaryOpExpr div) {
@@ -351,7 +365,7 @@ AffineExpr AffineExprSimplifier::Simplify(AffineExpr expr) {
 
 AffineMap AffineExprSimplifier::Simplify(AffineMap affine_map) {
   affine_map = mlir::simplifyAffineMap(affine_map);
-  mlir::SmallVector<AffineExpr, 4> results;
+  SmallVector<AffineExpr, 4> results;
   results.reserve(affine_map.getNumResults());
   bool nothing_changed = true;
   for (AffineExpr expr : affine_map.getResults()) {
@@ -507,6 +521,37 @@ void IndexingMap::AddConstraint(mlir::AffineExpr expr, Range range) {
   }
 }
 
+bool IndexingMap::ConstraintsSatisfied(
+    ArrayRef<AffineExpr> dim_const_exprs,
+    ArrayRef<AffineExpr> symbol_const_exprs) const {
+  CHECK(dim_const_exprs.size() == GetDimensionCount());
+  CHECK(symbol_const_exprs.size() == GetSymbolCount());
+  if (IsKnownEmpty()) {
+    return false;
+  }
+  for (auto& [expr, range] : constraints_) {
+    int64_t expr_value =
+        mlir::cast<AffineConstantExpr>(
+            expr.replaceDimsAndSymbols(dim_const_exprs, symbol_const_exprs))
+            .getValue();
+    if (expr_value < range.lower_bound || expr_value > range.upper_bound) {
+      return false;
+    }
+  }
+  return true;
+}
+
+SmallVector<int64_t, 4> IndexingMap::Evaluate(
+    ArrayRef<AffineExpr> dim_const_exprs,
+    ArrayRef<AffineExpr> symbol_const_exprs) const {
+  CHECK(dim_const_exprs.size() == GetDimensionCount());
+  CHECK(symbol_const_exprs.size() == GetSymbolCount());
+  AffineMap eval = affine_map_.replaceDimsAndSymbols(
+      dim_const_exprs, symbol_const_exprs, dim_const_exprs.size(),
+      symbol_const_exprs.size());
+  return eval.getConstantResults();
+}
+
 bool IndexingMap::IsKnownEmpty() const {
   auto is_infeasible = [](const Range& range) {
     return range.lower_bound > range.upper_bound;
@@ -638,6 +683,10 @@ bool operator==(const IndexingMap& lhs, const IndexingMap& rhs) {
   return lhs.GetAffineMap() == rhs.GetAffineMap() &&
          lhs.GetDimensionRanges() == rhs.GetDimensionRanges() &&
          lhs.GetSymbolRanges() == rhs.GetSymbolRanges();
+}
+
+IndexingMap operator*(const IndexingMap& lhs, const IndexingMap& rhs) {
+  return ComposeIndexingMaps(lhs, rhs);
 }
 
 // Simplification of IndexingMap has two main parts.

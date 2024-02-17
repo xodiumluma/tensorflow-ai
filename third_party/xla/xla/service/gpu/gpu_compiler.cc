@@ -297,6 +297,11 @@ class MaybeOwningThreadPool {
     int default_parallelism) {
   CHECK_GE(parallelism, 0);
   CHECK_GE(default_parallelism, 1);
+  // CurrentThreadId() returns -1 if the current thread does not belong to the
+  // thread pool. If the current thread belongs to the thread pool, we should
+  // not be using it, because it can potentially cause deadlocks.
+  CHECK(default_thread_pool == nullptr ||
+        default_thread_pool->CurrentThreadId() == -1);
 
   auto create_thread_pool = [&](int num_threads) {
     CHECK_GE(num_threads, 1);
@@ -464,23 +469,9 @@ GpuThunkAotCompilationResult::LoadExecutable(
                                       mlir_context.get(), llvm_module.get(),
                                       /*emit_ir_from_hlo=*/true,
                                       /*emit_kernels=*/false);
-  mlir::OwningOpRef<mlir::ModuleOp> mlir_module = llvm_ir::CreateMlirModuleOp(
-      mlir::Builder(mlir_context.get()).getUnknownLoc(), hlo_module->name());
-  std::vector<const BufferAllocation*> ordered_allocations;
-  absl::flat_hash_map<const mlir::Operation*, const xla::HloInstruction*>
-      operation_map;
-  TF_RETURN_IF_ERROR(HloToLhloModule(*buffer_assignment, *hlo_module,
-                                     *mlir_module, &ordered_allocations,
-                                     &operation_map));
-  ir_emitter_context.set_allocations(ordered_allocations);
   auto ir_emitter = IrEmitterUnnested::Create(&ir_emitter_context);
-  auto entry_function = mlir::cast<mlir::func::FuncOp>(
-      mlir_module->lookupSymbol(hlo_module->entry_computation()->name()));
-  // TODO(anlunx): EmitLmhloRegion emits fusion kernels. We need to make sure
-  // ptx and cubin already contain emission results and disable kernel emission
-  // here.
   TF_RETURN_IF_ERROR(
-      ir_emitter->EmitLmhloRegion(&entry_function.getBody(), operation_map));
+      ir_emitter->EmitHloComputation(hlo_module->entry_computation()));
   std::unique_ptr<ThunkSequence> thunk_sequence =
       ir_emitter->ConsumeThunkSequence();
   ForAllThunks([](Thunk* thunk) { thunk->ClearCompileTimeInfo(); },
@@ -542,15 +533,6 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
                                                "hlo verifier");
   }
 }
-
-void SetInstructionMetadata(HloModule* module) {
-  for (HloComputation* computation : module->computations()) {
-    for (HloInstruction* instruction : computation->instructions()) {
-      instruction->set_creation_pass_id(-1);
-      instruction->set_logical_creation_pass_id(-1);
-    }
-  }
-}
 }  // namespace
 
 // Runs optimization passes on the given HLO module.
@@ -608,8 +590,6 @@ absl::Status GpuCompiler::OptimizeHloModule(
   }
   layout_insensitive_algsimp_opts
       .set_enable_unconditional_reduce_of_concat_replacement(false);
-
-  SetInstructionMetadata(hlo_module);
 
   HloPassPipeline pre_spmd_pipeline("pre-spmd-partitioner");
   // Run some IR cleanup passes before running the SPMD partitioning
@@ -1270,8 +1250,7 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     // Remove `f32 -> bf16 -> f32` casts inserted by bf16 normalization.
     if (debug_options.xla_allow_excess_precision() &&
         debug_options.xla_gpu_simplify_all_fp_conversions()) {
-      sub_pipeline.AddPass<SimplifyFPConversions>(
-          SimplifyFPConversions::Scope::kSimplifyAllConversions);
+      sub_pipeline.AddPass<SimplifyFPConversions>();
     }
   };
 
@@ -1403,9 +1382,7 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     // (i.e. f32 -> bf16 -> f32) that have been produced by the algebraic
     // simplifier by rearranging ops (i.e. by pushing broadcasts towards the
     // root).
-    pipeline.AddPass<SimplifyFPConversions>(
-        SimplifyFPConversions::Scope::
-            kOnlySimplifyCompilerGeneratedConversions);
+    pipeline.AddPass<SimplifyFPConversions>();
   }
 
   // Since this CSE runs after collective schedule linearizer which inserts
@@ -2123,8 +2100,9 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
     constexpr int toolkit_version = TF_ROCM_VERSION;
 #endif
     pipeline.AddPass<CommandBufferScheduling>(
-        gpu_device_info.gpu_compute_capability(), toolkit_version,
+        gpu_device_info, toolkit_version,
         driver_version.value_or(toolkit_version));
+    pipeline.AddPass<GpuSanitizeConstantNames>();
     TF_RETURN_IF_ERROR(pipeline.Run(module).status());
   }
 

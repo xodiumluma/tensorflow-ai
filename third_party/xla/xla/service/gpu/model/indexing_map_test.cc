@@ -29,11 +29,37 @@ namespace xla {
 namespace gpu {
 namespace {
 
+using ::testing::ElementsAre;
+
 class IndexingMapTest : public HloTestBase {
  public:
   mlir::MLIRContext mlir_context_;
   AffineMapPrinter printer_;
 };
+
+TEST_F(IndexingMapTest, Evaluation) {
+  IndexingMap indexing_map = IndexingMap::FromTensorSizes(
+      ParseAffineMap("(d0, d1)[s0, s1] -> (d1, d0, s1, s0)", &mlir_context_),
+      {4, 4}, {2, 2});
+
+  auto results = indexing_map.Evaluate(
+      mlir::getAffineConstantExprs({1, 2}, &mlir_context_),
+      mlir::getAffineConstantExprs({3, 4}, &mlir_context_));
+  EXPECT_THAT(results, ElementsAre(2, 1, 4, 3));
+
+  auto feasible = indexing_map.ConstraintsSatisfied(
+      mlir::getAffineConstantExprs({1, 2}, &mlir_context_),
+      mlir::getAffineConstantExprs({3, 4}, &mlir_context_));
+  EXPECT_TRUE(feasible);
+
+  indexing_map.AddConstraint(ParseAffineExpr("s0 mod 4", &mlir_context_),
+                             Range{0, 0});
+
+  auto infeasible = indexing_map.ConstraintsSatisfied(
+      mlir::getAffineConstantExprs({1, 2}, &mlir_context_),
+      mlir::getAffineConstantExprs({5, 4}, &mlir_context_));
+  EXPECT_FALSE(infeasible);
+}
 
 TEST_F(IndexingMapTest, Composition_Permutation) {
   IndexingMap producer = IndexingMap::FromTensorSizes(
@@ -366,6 +392,30 @@ TEST_F(IndexingMapTest, AffineMapSimplification_DivGcdGreater1) {
       s0 in [0, 1233]
       s1 in [0, 127]
       s2 in [0, 3]
+    )"));
+}
+
+TEST_F(IndexingMapTest, AffineMapSimplification_ExtractFromMod) {
+  auto serialized_map =
+      "()[s0, s1, s2, s3] -> ((s0 * 458752 + s1 + s2 * 4 + s3 * 512) mod "
+      "20000)";
+  IndexingMap indexing_map = IndexingMap::FromTensorSizes(
+      ParseAffineMap(serialized_map, &mlir_context_), {}, {872, 4, 128, 896});
+  indexing_map.Simplify();
+  // TODO(jreiffers): Get rid of the division here. The important thing is that
+  // s1 was extracted from the mod and is not in the subtracted value, but we'd
+  // prefer the result to be:
+  //   (s0 * 458752 + s2 * 4 + s3 * 512) mod 20000 + s1
+  EXPECT_THAT(indexing_map.ToString(printer_), MatchIndexingString(R"(
+      ()[s0, s1, s2, s3] -> (
+        s0 * 458752 + s1 + s2 * 4 + s3 * 512 -
+        ((s0 * 14336 + s3 * 16 + s2 floordiv 8) floordiv 625) * 20000
+      )
+      domain:
+      s0 in [0, 871]
+      s1 in [0, 3]
+      s2 in [0, 127]
+      s3 in [0, 895]
     )"));
 }
 

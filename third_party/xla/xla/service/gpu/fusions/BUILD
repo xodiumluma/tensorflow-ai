@@ -4,7 +4,6 @@ load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
 load("@local_tsl//tsl/platform/default:cuda_build_defs.bzl", "if_cuda_is_configured")
 
 package(
-    default_visibility = ["//visibility:public"],
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     licenses = ["notice"],
 )
@@ -13,7 +12,6 @@ cc_library(
     name = "in_place_dynamic_update_slice",
     srcs = ["in_place_dynamic_update_slice.cc"],
     hdrs = ["in_place_dynamic_update_slice.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:status",
@@ -37,7 +35,6 @@ cc_library(
     name = "copy",
     srcs = ["copy.cc"],
     hdrs = ["copy.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:statusor",
@@ -56,7 +53,6 @@ cc_library(
     srcs = ["custom.cc"],
     hdrs = ["custom.h"],
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:shape_util",
@@ -132,7 +128,7 @@ cc_library(
     name = "fusion_emitter",
     srcs = ["fusion_emitter.cc"],
     hdrs = ["fusion_emitter.h"],
-    visibility = ["//visibility:public"],
+    visibility = ["//xla/service/gpu:__subpackages__"],
     deps = [
         "//xla:shape_util",
         "//xla:status",
@@ -169,7 +165,7 @@ cc_library(
     name = "fusions",
     srcs = ["fusions.cc"],
     hdrs = ["fusions.h"],
-    visibility = ["//visibility:public"],
+    visibility = ["//xla/service/gpu:__subpackages__"],
     deps = [
         ":concatenate",
         ":copy",
@@ -203,7 +199,6 @@ cc_library(
     name = "loop",
     srcs = ["loop.cc"],
     hdrs = ["loop.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:shape_util",
@@ -251,7 +246,6 @@ cc_library(
     name = "scatter",
     srcs = ["scatter.cc"],
     hdrs = ["scatter.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:shape_util",
@@ -296,7 +290,7 @@ cc_library(
     name = "tiling_util",
     srcs = ["tiling_util.cc"],
     hdrs = ["tiling_util.h"],
-    visibility = ["//visibility:public"],
+    visibility = ["//xla/service/gpu:__subpackages__"],
     deps = [
         "//xla:shape_util",
         "//xla:util",
@@ -320,7 +314,6 @@ cc_library(
     srcs = ["triton.cc"],
     hdrs = ["triton.h"],
     local_defines = if_cuda_is_configured(["GOOGLE_CUDA=1"]),
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:statusor",
@@ -369,7 +362,7 @@ cc_library(
     name = "thunk_util",
     srcs = ["thunk_util.cc"],
     hdrs = ["thunk_util.h"],
-    visibility = ["//visibility:public"],
+    visibility = ["//xla/service/gpu:__subpackages__"],
     deps = [
         "//xla:literal",
         "//xla:shape_util",
@@ -390,7 +383,6 @@ cc_library(
     name = "reduction",
     srcs = ["reduction.cc"],
     hdrs = ["reduction.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         ":thunk_util",
@@ -417,6 +409,8 @@ cc_library(
         "//xla/service/gpu:reduction_utils",
         "//xla/service/gpu:target_util",
         "//xla/service/gpu:thunk",
+        "//xla/service/gpu/model:indexing_analysis",
+        "//xla/service/gpu/model:indexing_map",
         "//xla/service/gpu/runtime:kernel_thunk",
         "//xla/service/llvm_ir:fused_ir_emitter",
         "//xla/service/llvm_ir:ir_array",
@@ -445,11 +439,30 @@ cc_library(
     ],
 )
 
+xla_cc_test(
+    name = "reduction_test",
+    srcs = ["reduction_test.cc"],
+    deps = [
+        ":fusions",
+        ":reduction",
+        "//xla:status_macros",
+        "//xla:statusor",
+        "//xla/service/gpu:gpu_device_info_for_tests",
+        "//xla/service/gpu:hlo_fusion_analysis",
+        "//xla/service/gpu/model:indexing_test_utils",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_googletest//:gtest",
+        "@llvm-project//mlir:IR",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
 cc_library(
     name = "concatenate",
     srcs = ["concatenate.cc"],
     hdrs = ["concatenate.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:shape_util",
@@ -478,7 +491,6 @@ cc_library(
     name = "transpose",
     srcs = ["transpose.cc"],
     hdrs = ["transpose.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         ":tiling_util",
@@ -533,7 +545,6 @@ cc_library(
     name = "input_slices",
     srcs = ["input_slices.cc"],
     hdrs = ["input_slices.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":fusion_emitter",
         "//xla:shape_util",

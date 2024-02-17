@@ -32,13 +32,16 @@ limitations under the License.
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Diagnostics.h"  // from @llvm-project
 #include "mlir/IR/OpDefinition.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tfrt_ops.h"
 #include "tensorflow/compiler/mlir/tfrt/transforms/ifrt/ifrt_constants.h"
 #include "xla/service/computation_placer.h"
@@ -81,17 +84,37 @@ class SinkVariableAsNamedArrayPass
       }
     }
 
+    // Rewrite ReadVariableOp with IfrtLoadVariableOp
+    llvm::SmallDenseMap<mlir::TF::ReadVariableOp, mlir::TF::IfrtLoadVariableOp>
+        read_to_load;
+    for (auto& [name, variable_config] : variable_config_by_name) {
+      for (auto& read_variable_op : variable_config.read_variable_op) {
+        builder.setInsertionPointAfter(read_variable_op);
+        // TODO(b/319045348): consider use resource alias analysis for this.
+        auto var_handle = GetDefiningOp<mlir::TF::VarHandleOp>(
+            read_variable_op.getResource());
+
+        if (!var_handle) {
+          read_variable_op->emitError(
+              "ReadVariableOp has no defining VarHandleOp.");
+          return signalPassFailure();
+        }
+
+        auto load_variable_op = builder.create<mlir::TF::IfrtLoadVariableOp>(
+            read_variable_op->getLoc(),
+            mlir::RankedTensorType::get(
+                {}, builder.getType<mlir::TF::StringType>()),
+            var_handle.getResult(),
+            builder.getStringAttr(variable_config.device_sharding_config),
+            builder.getStringAttr(name));
+        read_to_load[read_variable_op] = load_variable_op;
+      }
+    }
+
     // Rewrite ifrt call: variable tensors are sunk as attribute.
     // The runtime guarantees the binding of corresponding loaded ifrt array
     // based on attributes.
     for (auto& call : ifrt_call_ops) {
-      if (!call.getVariableNamesAttr().empty()) {
-        call->emitError() << "Expect empty "
-                          << call.getVariableNamesAttrName().str()
-                          << " attributes, but got "
-                          << call.getVariableNamesAttr().size() << " elements";
-        return signalPassFailure();
-      }
       if (!call.getVariableArgIndicesAttr().empty()) {
         call->emitError() << "Expect empty "
                           << call.getVariableArgIndicesAttrName().str()
@@ -109,7 +132,7 @@ class SinkVariableAsNamedArrayPass
       }
       llvm::SmallVector<int> variable_arg_indices;
       llvm::SmallVector<mlir::Attribute> variable_arg_names;
-      llvm::SmallVector<mlir::Value> non_variable_args;
+      llvm::SmallVector<mlir::Value> updated_args;
 
       for (const auto& [arg_idx, arg] :
            llvm::enumerate(ifrt_call_argument_configs[call])) {
@@ -117,63 +140,34 @@ class SinkVariableAsNamedArrayPass
           variable_arg_names.push_back(
               builder.getStringAttr(arg.variable_name));
           variable_arg_indices.push_back(arg_idx);
+          // Variable use the key from IfrtLoadVariable.
+          updated_args.push_back(
+              read_to_load[arg.read_variable_op].getResult());
         } else {
-          non_variable_args.push_back(call->getOperand(arg_idx));
+          // non variable
+          updated_args.push_back(call->getOperand(arg_idx));
         }
       }
 
-      call->setOperands(non_variable_args);
-      call.setVariableNamesAttr(
-          builder.getArrayAttr(llvm::ArrayRef(variable_arg_names)));
-      call.setVariableArgIndicesAttr(
+      builder.setInsertionPointAfter(call);
+      auto updated_ifrt_call = builder.create<mlir::TF::IfrtCallOp>(
+          call->getLoc(), call.getResultTypes(), updated_args);
+
+      updated_ifrt_call->setAttrs(call->getAttrs());
+      // Update variable_arg_indices attribute.
+      updated_ifrt_call.setVariableArgIndicesAttr(
           builder.getI32ArrayAttr(variable_arg_indices));
+
+      call.replaceAllUsesWith(updated_ifrt_call);
+      call.erase();
     }
 
-    // TODO(b/319045348): consider making this a separate pass.
-    // TODO(b/319045348): sink VarHandle to pair with ReadVariableOp.
-    // Forward traversal on every user of defining ReadVariableOps to determine
-    // if a variable tensor is used in host or exclusively on tpu cluster.
-    // Annotate ReadVariableOp and its defining VarHandle with finding and
-    // sharding config for later usage.
+    // Delete all ReadVariableOps that are not used.
     for (auto& [name, variable_config] : variable_config_by_name) {
-      bool used_by_host = false;
       for (auto& read_variable_op : variable_config.read_variable_op) {
-        if (!read_variable_op->use_empty()) {
-          used_by_host = true;
+        if (read_variable_op.use_empty()) {
+          read_variable_op.erase();
         }
-      }
-      variable_config.used_by_host = used_by_host;
-
-      // Annotate ReadVariableOp and VarHandle.
-      for (auto& read_variable_op : variable_config.read_variable_op) {
-        auto var_handle =
-            GetDefiningOp<mlir::TF::VarHandleOp>(read_variable_op.getOperand());
-        if (!var_handle) {
-          read_variable_op.emitError()
-              << "cannot find VarHandle op for ReadVariableOp in the current "
-                 "function body.";
-          return signalPassFailure();
-        }
-
-        read_variable_op->setAttr(kVariableUsedByHostAttr,
-                                  builder.getBoolAttr(used_by_host));
-        var_handle->setAttr(kVariableUsedByHostAttr,
-                            builder.getBoolAttr(used_by_host));
-        read_variable_op->setAttr(kVariableUsedByDeviceAttr,
-                                  builder.getBoolAttr(true));
-        var_handle->setAttr(kVariableUsedByDeviceAttr,
-                            builder.getBoolAttr(true));
-        read_variable_op->setAttr(kVariableArrayNameAttr,
-                                  builder.getStringAttr(name));
-        var_handle->setAttr(kVariableArrayNameAttr,
-                            builder.getStringAttr(name));
-
-        read_variable_op->setAttr(
-            kVariableShardingConfigTextAttr,
-            builder.getStringAttr(variable_config.device_sharding_config));
-        var_handle->setAttr(
-            kVariableShardingConfigTextAttr,
-            builder.getStringAttr(variable_config.device_sharding_config));
       }
     }
   }
@@ -182,13 +176,13 @@ class SinkVariableAsNamedArrayPass
   struct VariableConfig {
     // VariableDeviceShardingConfig text proto.
     std::string device_sharding_config;
-    bool used_by_host;
     // All ReadVariableOps that returns this named variable.
     std::vector<mlir::TF::ReadVariableOp> read_variable_op;
   };
   struct IfrtArgConfig {
     bool is_variable;
     std::string variable_name;
+    mlir::TF::ReadVariableOp read_variable_op;
   };
   using IfrtArgConfigList = llvm::SmallVector<IfrtArgConfig>;
 
@@ -251,8 +245,9 @@ class SinkVariableAsNamedArrayPass
         }
 
         variable_config.read_variable_op.push_back(read_variable_op);
-        args.push_back(
-            {.is_variable = true, .variable_name = *variable_tensor_name});
+        args.push_back({.is_variable = true,
+                        .variable_name = *variable_tensor_name,
+                        .read_variable_op = read_variable_op});
       } else {
         args.push_back({.is_variable = false});
       }
