@@ -332,6 +332,7 @@ const StatTypeMap& GetStatTypeMap() {
       {"dcn_destination_per_slice_device_id", kDcnDestinationPerSliceDeviceId},
       {"dcn_chunk", kDcnChunk},
       {"dcn_loop_index", kDcnLoopIndex},
+      {"dropped_traces", kDroppedTraces},
   });
   DCHECK_EQ(stat_type_map->size(), kNumStatTypes);
   return *stat_type_map;
@@ -468,7 +469,7 @@ std::optional<int64_t> FindMegaScaleStatType(absl::string_view stat_name) {
   return std::nullopt;
 }
 
-std::string_view GetTaskEnvStatTypeStr(TaskEnvStatType stat_type) {
+absl::string_view GetTaskEnvStatTypeStr(TaskEnvStatType stat_type) {
   return GetTaskEnvStatTypeStrMap().at(stat_type);
 }
 

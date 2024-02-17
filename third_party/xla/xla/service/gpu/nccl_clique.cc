@@ -24,6 +24,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/base/const_init.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/node_hash_map.h"
@@ -249,6 +251,10 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
     ranks.reserve(args.size());
     for (auto* arg : args) ranks.emplace_back(*arg);
 
+    // Sort device ranks, mainly to get more readable logs below, NCCL does
+    // not care in what order ranks are initialized.
+    absl::c_sort(ranks, [](auto& a, auto& b) { return a.rank < b.rank; });
+
     VLOG(3) << absl::StreamFormat(
         "Create NCCL communicators for clique %s; ranks=[%s]; hash(id)=%d",
         clique_key.ToString(), DeviceRanksToString(ranks),
@@ -305,13 +311,16 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
 
 //===----------------------------------------------------------------------===//
 
+using AcquiredCliquesMap = NcclClique::AcquiredCliquesMap;
+
 absl::StatusOr<std::shared_ptr<NcclClique::Lock>> AcquireNcclClique(
     se::StreamExecutor* device, RunId run_id, NcclCliqueKey clique_key,
     const NcclCliqueIdCallback& clique_id_callback, int32_t rank,
-    size_t num_local_participants) {
+    size_t num_local_participants, const AcquiredCliquesMap& acquired_cliques) {
   VLOG(2) << "Acquire NCCL clique " << clique_key.ToString() << "; run"
           << run_id.ToString() << "; rank " << rank
-          << "; num_local_participants=" << num_local_participants;
+          << "; num_local_participants=" << num_local_participants
+          << "; acquired_cliques=" << acquired_cliques.size();
 
   // Get the clique lock via the rendezvous to guarantee that all clique
   // members participate in XLA run.
