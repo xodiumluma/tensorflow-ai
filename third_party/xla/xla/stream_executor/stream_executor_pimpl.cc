@@ -379,12 +379,12 @@ absl::Status StreamExecutor::SynchronousMemcpyH2D(
 
 bool StreamExecutor::Memcpy(Stream* stream, void* host_dst,
                             const DeviceMemoryBase& device_src, uint64_t size) {
-  return implementation_->Memcpy(stream, host_dst, device_src, size);
+  return implementation_->Memcpy(stream, host_dst, device_src, size).ok();
 }
 
 bool StreamExecutor::Memcpy(Stream* stream, DeviceMemoryBase* device_dst,
                             const void* host_src, uint64_t size) {
-  return implementation_->Memcpy(stream, device_dst, host_src, size);
+  return implementation_->Memcpy(stream, device_dst, host_src, size).ok();
 }
 
 bool StreamExecutor::MemcpyDeviceToDevice(Stream* stream,
@@ -436,6 +436,20 @@ absl::Status StreamExecutor::WaitForEventOnExternalStream(std::intptr_t stream,
 
 Event::Status StreamExecutor::PollForEventStatus(Event* event) {
   return implementation_->PollForEventStatus(event);
+}
+
+absl::StatusOr<std::unique_ptr<Stream>> StreamExecutor::CreateStream(
+    std::optional<std::variant<StreamPriority, int>> priority) {
+  auto stream = std::make_unique<Stream>(this);
+  if (priority.has_value()) {
+    if (std::holds_alternative<StreamPriority>(*priority)) {
+      stream->SetPriority(std::get<StreamPriority>(*priority));
+    } else {
+      stream->SetPriority(std::get<int>(*priority));
+    }
+  }
+  TF_RETURN_IF_ERROR(stream->Initialize());
+  return std::move(stream);
 }
 
 bool StreamExecutor::AllocateStream(Stream* stream) {

@@ -113,6 +113,7 @@ STREAM_EXECUTOR_DEPENDENCIES = [
     "//xla/stream_executor/platform",
     "@local_tsl//tsl/framework:device_id",
     "@local_tsl//tsl/framework:device_type",
+    "@local_tsl//tsl/lib/gtl:int_type",
     "@local_tsl//tsl/platform:env",
     "@local_tsl//tsl/platform:errors",
     "@local_tsl//tsl/platform:ml_dtypes",
@@ -452,12 +453,6 @@ cc_library(
     name = "command_buffer",
     srcs = ["command_buffer.cc"],
     hdrs = ["command_buffer.h"],
-    local_defines = select({
-        "//xla/stream_executor/cuda:graph_conditional_enabled": [
-            "STREAM_EXECUTOR_CUDA_ENABLE_GRAPH_CONDITIONAL=1",
-        ],
-        "//conditions:default": [],
-    }),
     visibility = ["//visibility:private"],
     deps = [
         ":stream_executor_headers",
@@ -465,6 +460,8 @@ cc_library(
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/lib/gtl:int_type",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
     ],
@@ -559,7 +556,10 @@ cc_library(
 
 transitive_hdrs(
     name = "stream_executor_install_hdrs",
-    tags = ["avoid_dep"],
+    tags = [
+        "alt_dep=:stream_executor_headers",
+        "avoid_dep",
+    ],
     deps = [":stream_executor_headers"],
 )
 
@@ -668,6 +668,8 @@ xla_cc_test(
         ":stream_executor",
         "//xla/stream_executor/host:host_platform",
         "@com_google_absl//absl/log:check",
+        "@com_google_googletest//:gtest",
+        "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
     ],

@@ -15,8 +15,6 @@ limitations under the License.
 
 #include "xla/service/gpu/model/indexing_analysis.h"
 
-#include <optional>
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/strings/string_view.h"
@@ -35,7 +33,6 @@ using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::ExplainMatchResult;
 using ::testing::IsEmpty;
-using ::testing::Optional;
 using ::testing::Pair;
 using ::testing::UnorderedElementsAre;
 
@@ -119,7 +116,7 @@ TEST_F(IndexingAnalysisTest, ComputeGroupedOutputToInputIndexing) {
   auto fusion_adaptor = ProducerConsumerFusion(transpose, root);
 
   auto grouped_indexing = ComputeGroupedOutputToInputIndexing(
-      fusion_adaptor, /*output_id=*/0, &mlir_context_);
+      fusion_adaptor, fusion_adaptor.GetRoots()[0], &mlir_context_);
   EXPECT_THAT(grouped_indexing,
               UnorderedElementsAre(
                   Pair(root, ElementsAre(MatchIndexingMap(R"(
@@ -146,6 +143,153 @@ TEST_F(IndexingAnalysisTest, ComputeGroupedOutputToInputIndexing) {
                         d0 in [0, 999]
                         d1 in [0, 999]
                       )")))));
+}
+
+TEST_F(IndexingAnalysisTest,
+       ComputeGroupedOutputToInputIndexing_VariadicReduce) {
+  auto module = ParseAndReturnVerifiedModule(R"(
+HloModule m
+
+add {
+  param_0 = f32[] parameter(0)
+  param_1 = f32[] parameter(1)
+  param_2 = f32[] parameter(2)
+  param_3 = f32[] parameter(3)
+  add.0 = f32[] add(param_0, param_2)
+  add.1 = f32[] add(param_1, param_3)
+  ROOT t = (f32[], f32[]) tuple(add.0, add.1)
+}
+
+ENTRY entry_computation {
+  param_0.3 = f32[32,40]{1,0} parameter(0)
+  param_1.3 = f32[32,40]{1,0} parameter(1)
+  param_2.2 = f32[] parameter(2)
+  constant = f32[] constant(0)
+  ROOT reduce = (f32[32]{0}, f32[32]{0}) reduce(param_0.3, param_1.3, param_2.2, constant), dimensions={1}, to_apply=add
+}
+  )");
+  EXPECT_TRUE(module.ok());
+  const HloInstruction* root =
+      (*module)->entry_computation()->root_instruction();
+
+  auto fusion_adaptor = HloFusionAdaptor::ForInstruction(root);
+
+  auto grouped_indexing = ComputeGroupedOutputToInputIndexing(
+      *fusion_adaptor, fusion_adaptor->GetRoots()[0], &mlir_context_);
+
+  EXPECT_THAT(grouped_indexing,
+              UnorderedElementsAre(
+                  Pair(root, ElementsAre(MatchIndexingMap(R"(
+                    (d0) -> (d0)
+                    domain:
+                    d0 in [0, 31]
+                  )"))),
+                  Pair(root->operand(0), ElementsAre(MatchIndexingMap(R"(
+                    (d0)[s0] -> (d0, s0)
+                    domain:
+                    d0 in [0, 31]
+                    s0 in [0, 39]
+                  )"))),
+                  Pair(root->operand(1), ElementsAre(MatchIndexingMap(R"(
+                    (d0)[s0] -> (d0, s0)
+                    domain:
+                    d0 in [0, 31]
+                    s0 in [0, 39]
+                  )"))),
+                  Pair(root->operand(2), ElementsAre(MatchIndexingMap(R"(
+                    (d0) -> ()
+                    domain:
+                    d0 in [0, 31]
+                  )"))),
+                  Pair(root->operand(3), ElementsAre(MatchIndexingMap(R"(
+                    (d0) -> ()
+                    domain:
+                    d0 in [0, 31]
+                  )")))));
+}
+
+TEST_F(IndexingAnalysisTest, ComputeGroupedOutputToInputIndexing_SingleOp) {
+  auto module = ParseAndReturnVerifiedModule(R"(
+    HloModule m
+    ENTRY e {
+      p0 = f32[1000, 1000] parameter(0)
+      p1 = f32[1000, 1000] parameter(1)
+      exp0 = f32[1000, 1000] exponential(p1)
+      ROOT a0 = f32[1000, 1000] add(p0, exp0)
+    }
+  )");
+  EXPECT_TRUE(module.ok());
+  HloComputation* entry_computation = (*module)->entry_computation();
+  const HloInstruction* exponential =
+      entry_computation->GetInstructionWithName("exp0");
+  const HloInstruction* parameter =
+      entry_computation->GetInstructionWithName("p1");
+
+  auto fusion_adaptor = HloFusionAdaptor::ForInstruction(exponential);
+  HloInstructionAdaptor parameter_adaptor(*parameter);
+  auto grouped_indexing = ComputeGroupedOutputToInputIndexing(
+      *fusion_adaptor, parameter_adaptor, &mlir_context_);
+  EXPECT_THAT(grouped_indexing, UnorderedElementsAre(Pair(
+                                    parameter, ElementsAre(MatchIndexingMap(R"(
+                                                     (d0, d1) -> (d0, d1)
+                                                     domain:
+                                                     d0 in [0, 999]
+                                                     d1 in [0, 999]
+                                                   )")))));
+}
+
+TEST_F(IndexingAnalysisTest,
+       ComputeGroupedOutputToInputIndexing_StartNotAtRoot) {
+  auto module = ParseAndReturnVerifiedModule(R"(
+    HloModule m
+    max {
+      p0 = f32[] parameter(0)
+      p1 = f32[] parameter(1)
+      ROOT max = f32[] maximum(p0, p1)
+    }
+    f {
+      p0 = f32[15, 20] parameter(0)
+      p0_init = f32[] parameter(1)
+      p0_bcast = f32[15, 32, 20, 64] broadcast(p0), dimensions={0, 2}
+
+      ROOT reduce_2 = f32[15, 64] reduce(p0_bcast, p0_init),
+        dimensions={1, 2}, to_apply=max
+    }
+    ENTRY e {
+      p0 = f32[15, 20] parameter(0)
+      p0_init = f32[] constant(-inf)
+      ROOT fusion = f32[15, 64] fusion(p0, p0_init), kind=kLoop, calls=f
+    }
+  )");
+  EXPECT_TRUE(module.ok());
+
+  auto fusion_adaptor = HloFusionAdaptor::ForInstruction(
+      (*module)->entry_computation()->root_instruction());
+  auto root = fusion_adaptor->GetRoots()[0];
+  auto bcast = root.GetOperand(0);
+  auto parameter_0 = bcast.GetOperand(0);
+
+  auto grouped_indexing = ComputeGroupedOutputToInputIndexing(
+      *fusion_adaptor, bcast, &mlir_context_);
+  EXPECT_THAT(
+      grouped_indexing,
+      UnorderedElementsAre(
+          Pair(&bcast.instruction(), ElementsAre(MatchIndexingMap(R"(
+            (d0, d1, d2, d3) -> (d0, d1, d2, d3)
+            domain:
+            d0 in [0, 14]
+            d1 in [0, 31]
+            d2 in [0, 19]
+            d3 in [0, 63]
+          )"))),
+          Pair(&parameter_0.instruction(), ElementsAre(MatchIndexingMap(R"(
+            (d0, d1, d2, d3) -> (d0, d2)
+            domain:
+            d0 in [0, 14]
+            d1 in [0, 31]
+            d2 in [0, 19]
+            d3 in [0, 63]
+          )")))));
 }
 
 TEST_F(IndexingAnalysisTest, PhysicalLayoutTestOutputPermutation) {
@@ -176,6 +320,37 @@ TEST_F(IndexingAnalysisTest, PhysicalLayoutTestOutputPermutation) {
                             d0 in [0, 9]
                             d1 in [0, 19]
                             d2 in [0, 29]
+                          )"))));
+}
+
+TEST_F(IndexingAnalysisTest, CopyNothing) {
+  auto ir = R"(
+    HloModule m
+    ENTRY e {
+      p0 = f32[0, 0]{0,1} parameter(0)
+      ROOT copy0 = f32[0, 0]{1,0} copy(p0)
+    }
+  )";
+  auto input_indexing =
+      GetOutputToInputIndexingForEntryComputation(ir, /*output_id=*/0);
+  input_indexing.Simplify();
+  EXPECT_THAT(input_indexing.indexing_maps,
+              ElementsAre(ElementsAre(MatchIndexingMap(R"(
+                            (d0, d1) -> (d0, d1)
+                            domain:
+                            d0 in [0, -1]
+                            d1 in [0, -1]
+                          )"))));
+
+  auto output_indexing =
+      GetInputToOutputIndexingForEntryComputation(ir, /*input_id=*/0);
+  output_indexing.Simplify();
+  EXPECT_THAT(output_indexing.indexing_maps,
+              ElementsAre(ElementsAre(MatchIndexingMap(R"(
+                            (d0, d1) -> (d0, d1)
+                            domain:
+                            d0 in [0, -1]
+                            d1 in [0, -1]
                           )"))));
 }
 
@@ -1300,6 +1475,34 @@ TEST_F(IndexingAnalysisTest, PadOpNoInterior) {
                                         domain:
                                         d0 in [0, 9]
                                         d1 in [0, 7]
+                                      )"))));
+}
+
+TEST_F(IndexingAnalysisTest, PadOpNegativePadding) {
+  // The interior padding is applied first (even with negative padding), so we
+  // get a size of 5 (7 + 6 - 8).
+  // in:     0 1 2 3 4 5 6
+  // padded: 0 p 1 p 2 p 3 p 4 p 5 p 6
+  // sliced:       p 2 p 3 p
+  auto input_indexing = GetOutputToInputIndexingForEntryComputation(R"(
+    HloModule m
+    ENTRY e {
+      p0 = f32[7] parameter(0)
+      p1 = f32[] parameter(1)
+      ROOT pad = f32[5] pad(p0, p1), padding=-3_-5_1
+    }
+  )");
+  EXPECT_THAT(input_indexing.indexing_maps,
+              ElementsAre(ElementsAre(MatchIndexingMap(R"(
+                                        (d0) -> ((d0 + 3) floordiv 2)
+                                        domain:
+                                        d0 in [0, 4]
+                                        (d0 + 3) mod 2 in [0, 0]
+                                      )")),
+                          ElementsAre(MatchIndexingMap(R"(
+                                        (d0) -> ()
+                                        domain:
+                                        d0 in [0, 4]
                                       )"))));
 }
 

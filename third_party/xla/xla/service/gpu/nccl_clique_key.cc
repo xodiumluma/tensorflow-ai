@@ -37,18 +37,29 @@ namespace xla::gpu {
 //===----------------------------------------------------------------------===//
 
 NcclCliqueKey::NcclCliqueKey(std::vector<GlobalDeviceId> devices,
-                             int64_t stream_id)
-    : devices_(std::move(devices)), stream_id_(stream_id) {}
+                             int64_t stream_id, AsyncStreamKind stream_kind)
+    : devices_(std::move(devices)),
+      stream_id_(stream_id),
+      stream_kind_(stream_kind) {}
 
 absl::Span<const GlobalDeviceId> NcclCliqueKey::devices() const {
   return devices_;
 }
+
+int64_t NcclCliqueKey::stream_id() const { return stream_id_; }
 
 std::optional<int64_t> NcclCliqueKey::rank(GlobalDeviceId id) const {
   if (auto it = absl::c_find(devices_, id); it != devices_.end()) {
     return it - devices_.begin();
   }
   return std::nullopt;
+}
+
+bool NcclCliqueKey::IsSubsetOf(const NcclCliqueKey& other) const {
+  return stream_id_ == other.stream_id_ &&
+         absl::c_all_of(devices_, [&](GlobalDeviceId id) {
+           return absl::c_linear_search(other.devices_, id);
+         });
 }
 
 std::string NcclCliqueKey::ToString() const {

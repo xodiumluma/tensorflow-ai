@@ -143,6 +143,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_nccl_termination_timeout_seconds(-1);
   opts.set_xla_gpu_enable_shared_constants(true);
   opts.set_xla_gpu_enable_nccl_user_buffers(false);
+  opts.set_xla_gpu_enable_nccl_comm_splitting(false);
 
   // Set 4GB space limit for redzone scratch allocator.
   opts.set_xla_gpu_redzone_scratch_max_megabytes(1LL << 12);
@@ -225,6 +226,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_dot_strength_reduction(true);
 
   opts.set_xla_gpu_enable_bf16_6way_gemm(false);
+  opts.set_xla_gpu_nccl_collective_max_nchannels(0);
+  opts.set_xla_gpu_nccl_p2p_max_nchannels(0);
 
   return opts;
 }
@@ -438,7 +441,15 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
           }
         };
 
+        // Disable command buffers by clearing a set of supported commands.
+        if (input.empty()) {
+          debug_options->clear_xla_gpu_enable_command_buffer();
+          return true;
+        }
+
         std::vector<absl::string_view> values = absl::StrSplit(input, ',');
+
+        // Overwrite a set of supported commands with a flag.
         if (absl::c_all_of(values, is_command_type)) {
           debug_options->clear_xla_gpu_enable_command_buffer();
           for (const absl::string_view value : values) {
@@ -446,7 +457,10 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 parse_command_type(value));
           }
           return true;
-        } else if (absl::c_all_of(values, is_add_or_remove_command_type)) {
+        }
+
+        // Add or remove a commands from a default set.
+        if (absl::c_all_of(values, is_add_or_remove_command_type)) {
           for (const absl::string_view value : values) {
             DebugOptions::CommandBufferCmdType cmd_type =
                 parse_command_type(value.substr(1));
@@ -457,9 +471,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                   debug_options->mutable_xla_gpu_enable_command_buffer();
               erase_command_type(enabled, cmd_type);
             }
+            return true;
           }
-          return true;
         }
+
+        // Return an error if flag value was not recognized as one of the
+        // supported modes.
         return false;
       };
 
@@ -1170,6 +1187,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "allocator config must also be set to a non-zero value that is large "
       "enough to meet peak collective memory usage."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_enable_nccl_comm_splitting",
+      bool_setter_for(&DebugOptions::set_xla_gpu_enable_nccl_comm_splitting),
+      debug_options->xla_gpu_enable_nccl_comm_splitting(),
+      "Enables NCCL communicator splitting which allows sharing NCCL resources "
+      "between different NCCL cliques."));
+  flag_list->push_back(tsl::Flag(
       "xla_gpu_redzone_scratch_max_megabytes",
       int64_setter_for(
           &DebugOptions::set_xla_gpu_redzone_scratch_max_megabytes),
@@ -1515,6 +1538,26 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       bool_setter_for(&DebugOptions::set_xla_gpu_enable_dot_strength_reduction),
       debug_options->xla_gpu_enable_dot_strength_reduction(),
       "Enable rewriting matmuls with a vector into reductions."));
+  flag_list->push_back(
+      tsl::Flag("xla_gpu_nccl_collective_max_nchannels",
+                int64_setter_for(
+                    &DebugOptions::set_xla_gpu_nccl_collective_max_nchannels),
+                debug_options->xla_gpu_nccl_collective_max_nchannels(),
+                "Specify the maximum number of channels(SMs) NCCL will use "
+                "for collective operations. Default is 0 which is to let "
+                "NCCL decide."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_nccl_p2p_max_nchannels",
+      int64_setter_for(&DebugOptions::set_xla_gpu_nccl_p2p_max_nchannels),
+      debug_options->xla_gpu_nccl_p2p_max_nchannels(),
+      "Specify the maximum number of channels(SMs) NCCL will use "
+      "for p2p operations. Default is 0 which is to let "
+      "NCCL decide."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_enable_mlir_emitters",
+      bool_setter_for(&DebugOptions::set_xla_gpu_enable_mlir_emitters),
+      debug_options->xla_gpu_enable_mlir_emitters(),
+      "Enable new MLIR-based emitters."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more
