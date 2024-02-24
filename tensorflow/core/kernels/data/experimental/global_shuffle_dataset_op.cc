@@ -45,6 +45,7 @@ namespace {
 
 constexpr int32_t kIndexShuffleRounds = 8;
 
+constexpr const char kElementCount[] = "element_count";
 constexpr const char kGlobalShuffleDataset[] = "GlobalShuffleDataset";
 constexpr const char kReshuffleEachIteration[] = "reshuffle_each_iteration";
 constexpr const char kSeed[] = "seed";
@@ -195,19 +196,33 @@ class GlobalShuffleDatasetOp::Dataset::Iterator
     TF_RETURN_IF_ERROR(input_impl_->GetNext(&global_shuffle_ctx, out_tensors,
                                             end_of_sequence));
     ctx->MergeCheckpoint(global_shuffle_ctx.checkpoint());
+    ++element_count_;
     return absl::OkStatus();
   }
 
   absl::Status SaveInternal(SerializationContext* ctx,
                             IteratorStateWriter* writer) override {
-    return absl::UnimplementedError(
-        "TODO(b/325112575): Support checkpoints for random access iterators.");
+    absl::MutexLock l(&mu_);
+    TF_RETURN_IF_ERROR(
+        writer->WriteScalar(prefix(), kElementCount, element_count_));
+    return absl::OkStatus();
   }
 
   absl::Status RestoreInternal(IteratorContext* ctx,
                                IteratorStateReader* reader) override {
-    return absl::UnimplementedError(
-        "TODO(b/325112575): Support checkpoints for random access iterators.");
+    absl::MutexLock l(&mu_);
+    if (ctx->element_count().has_value()) {
+      element_count_ = *ctx->element_count();
+    } else {
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), kElementCount, &element_count_));
+    }
+    IteratorContext::Params params(ctx);
+    params.element_count = element_count_;
+    IteratorContext ctx_copy(params);
+    TF_RETURN_IF_ERROR(RestoreInput(&ctx_copy, reader, input_impl_));
+    ctx->MergeCheckpoint(ctx_copy.checkpoint());
+    return absl::OkStatus();
   }
 
  private:
@@ -220,9 +235,20 @@ class GlobalShuffleDatasetOp::Dataset::Iterator
     uint64_t max_index =
         cardinality_ > 0 ? static_cast<uint64_t>(cardinality_ - 1) : 0;
     return [parent_index_mapper, seed, seed2, seed3,
-            max_index](int64_t element_position) {
+            max_index](int64_t element_position) -> int64_t {
       if (parent_index_mapper != nullptr) {
         element_position = parent_index_mapper(element_position);
+      }
+      // This could happen if the source dataset generates more elements than
+      // needed by the intermediate transformations. For example, when shuffling
+      // `range(10).batch(3, drop_remainder=True)`, the last element of `range`
+      // has index 9, which maps to the 4th batched element. However, since
+      // `batch` drops remainders, the cardinality is 3. In this case, the
+      // element position exceeds the max index. The caller should check the
+      // return value and return end_of_sequence accordingly.
+      // TODO(b/325112575): Update `index_mapper` to return `std::optional`.
+      if (element_position < 0 || element_position > max_index) {
+        return -1;
       }
       return static_cast<int64_t>(tensorflow::random::index_shuffle(
           static_cast<uint64_t>(element_position), {seed, seed2, seed3},
@@ -237,7 +263,9 @@ class GlobalShuffleDatasetOp::Dataset::Iterator
   int64_t seed_ ABSL_GUARDED_BY(mu_) = 0;
   int64_t seed2_ ABSL_GUARDED_BY(mu_) = 0;
   int64_t seed3_ ABSL_GUARDED_BY(mu_) = 0;
+
   std::unique_ptr<IteratorBase> input_impl_ ABSL_GUARDED_BY(mu_);
+  int64_t element_count_ ABSL_GUARDED_BY(mu_) = 0;
 };
 
 GlobalShuffleDatasetOp::GlobalShuffleDatasetOp(OpKernelConstruction* ctx)

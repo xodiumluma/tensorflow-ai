@@ -14,15 +14,19 @@
 # ==============================================================================
 """Tests for global shuffling of tf.data datasets."""
 
-from typing import Optional
+from typing import Callable, Optional
 
 from absl.testing import parameterized
 
 from tensorflow.python.data.experimental.ops import global_shuffle_op
+from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.framework import combinations
+from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
+from tensorflow.python.framework import random_seed
 from tensorflow.python.platform import test
 
 
@@ -32,10 +36,18 @@ class GlobalShuffleTest(test_base.DatasetTestBase, parameterized.TestCase):
   @combinations.generate(
       combinations.times(
           test_base.default_test_combinations(),
-          combinations.combine(seed=[None, 42])))
-  def testRange(self, seed: Optional[int]):
+          combinations.combine(
+              seed=[None, 42],
+              use_tensor_seed=[True, False],
+              prefetch=[True, False])))
+  def testRange(
+      self, seed: Optional[int], use_tensor_seed: bool, prefetch: bool):
     dataset_range = 100
     dataset = dataset_ops.Dataset.range(dataset_range)
+    if prefetch:
+      dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+    seed = (constant_op.constant(seed, dtype=dtypes.int64)
+            if seed and use_tensor_seed else seed)
     dataset = global_shuffle_op._global_shuffle(dataset, seed=seed)
     dataset = dataset.repeat(3)
     output = self.getDatasetOutput(dataset, requires_initialization=True)
@@ -80,25 +92,62 @@ class GlobalShuffleTest(test_base.DatasetTestBase, parameterized.TestCase):
   @combinations.generate(
       combinations.times(
           test_base.default_test_combinations(),
-          combinations.combine(seed=[None, 42])))
-  def testNoReshuffleEachIteration(self, seed: Optional[int]):
+          combinations.combine(
+              dataset_range=[100],
+              batch_size=[2, 7],
+              drop_remainder=[True, False],
+              reshuffle=[True, False],
+              seed=[None, 42])))
+  def testReshuffleRepeatEpochs(
+      self,
+      dataset_range: int,
+      batch_size: int,
+      drop_remainder: bool,
+      reshuffle: bool,
+      seed: Optional[int]):
+    dataset = dataset_ops.Dataset.range(dataset_range)
+    dataset = dataset.batch(batch_size, drop_remainder=drop_remainder)
+    dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+    dataset = global_shuffle_op._global_shuffle(
+        dataset, seed=seed, reshuffle_each_iteration=reshuffle)
+    dataset = dataset.map(lambda x: x[0])
+    dataset = dataset.repeat(2)
+
+    expected = list(range(0, dataset_range, batch_size))
+    if drop_remainder:
+      expected = expected[: (dataset_range // batch_size)]
+    len_per_iteration = len(expected)
+    expected *= 2
+
+    output = self.getDatasetOutput(dataset, requires_initialization=True)
+    self.assertCountEqual(output, expected)
+    output_per_iteration = [
+        output[i : i + len_per_iteration]
+        for i in range(0, len(output), len_per_iteration)]
+    if reshuffle:
+      self.assertNotEqual(output_per_iteration[0], output_per_iteration[1])
+    else:
+      self.assertEqual(output_per_iteration[0], output_per_iteration[1])
+
+  @combinations.generate(
+      combinations.times(
+          combinations.combine(tf_api_version=2, mode="eager"),
+          combinations.combine(reshuffle=[True, False], seed=[None, 42])))
+  def testReshuffleIterationEpochs(self, reshuffle: bool, seed: Optional[int]):
+    # TensorFlow unit tests set the global graph seed. We unset it here so that
+    # we can control determinism via the `seed` parameter.
+    random_seed.set_random_seed(None)
     dataset_range = 100
     dataset = dataset_ops.Dataset.range(dataset_range)
     dataset = global_shuffle_op._global_shuffle(
-        dataset, seed=seed, reshuffle_each_iteration=False)
-    dataset = dataset.repeat(3)
-    output = self.getDatasetOutput(dataset, requires_initialization=True)
-    self.assertCountEqual(output, list(range(dataset_range)) * 3)
+        dataset, seed=seed, reshuffle_each_iteration=reshuffle)
 
-    output_per_iteration = [
-        output[i : i + dataset_range]
-        for i in range(0, len(output), dataset_range)]
-    self.assertCountEqual(output_per_iteration[0], list(range(dataset_range)))
-    self.assertCountEqual(output_per_iteration[1], list(range(dataset_range)))
-    self.assertCountEqual(output_per_iteration[2], list(range(dataset_range)))
-    self.assertEqual(output_per_iteration[0], output_per_iteration[1])
-    self.assertEqual(output_per_iteration[0], output_per_iteration[2])
-    self.assertEqual(output_per_iteration[1], output_per_iteration[2])
+    first_epoch = self.getDatasetOutput(dataset)
+    second_epoch = self.getDatasetOutput(dataset)
+    if reshuffle:
+      self.assertNotEqual(first_epoch, second_epoch)
+    else:
+      self.assertEqual(first_epoch, second_epoch)
 
   @combinations.generate(test_base.default_test_combinations())
   def testEmptyDataset(self):
@@ -120,6 +169,36 @@ class GlobalShuffleTest(test_base.DatasetTestBase, parameterized.TestCase):
         "with random access."):
       dataset = global_shuffle_op._global_shuffle(dataset)
       self.getDatasetOutput(dataset, requires_initialization=True)
+
+
+class GlobalShuffleCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                                  parameterized.TestCase):
+
+  @combinations.generate(
+      combinations.times(
+          test_base.default_test_combinations(),
+          checkpoint_test_base.default_test_combinations(),
+          combinations.combine(
+              reshuffle_each_iteration=[True, False], prefetch=[True, False])))
+  def testRange(
+      self,
+      verify_fn: Callable[..., None],
+      reshuffle_each_iteration: bool,
+      prefetch: bool):
+
+    def _build_dataset() -> dataset_ops.Dataset:
+      dataset = dataset_ops.Dataset.range(10)
+      if prefetch:
+        dataset = dataset.prefetch(buffer_size=dataset_ops.AUTOTUNE)
+      dataset = global_shuffle_op._global_shuffle(
+          dataset, seed=42, reshuffle_each_iteration=reshuffle_each_iteration)
+      return dataset
+
+    verify_fn(
+        self,
+        _build_dataset,
+        num_outputs=10,
+        assert_items_equal=reshuffle_each_iteration)
 
 
 if __name__ == "__main__":

@@ -17,10 +17,12 @@ limitations under the License.
 #define XLA_SERVICE_GPU_MODEL_COALESCING_ANALYSIS_H_
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/types/span.h"
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
+#include "xla/service/gpu/hlo_traversal.h"
 
 namespace xla {
 namespace gpu {
@@ -33,7 +35,8 @@ class CoalescingAnalysis {
  public:
   // Computes read coalescing for operands of `instr`.
   CoalescingAnalysis(const HloInstruction* instr,
-                     HloFusionAnalysis::EmitterFusionKind fusion_kind,
+                     absl::Span<const HloInstruction* const> operands,
+                     const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
                      mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
@@ -41,7 +44,8 @@ class CoalescingAnalysis {
   // Computes read coalescing for operands of fused `producer` and `consumer`.
   CoalescingAnalysis(const HloInstruction* producer,
                      const HloInstruction* consumer,
-                     HloFusionAnalysis::EmitterFusionKind fusion_kind,
+                     absl::Span<const HloInstruction* const> operands,
+                     const HloFusionAnalysis& fusion_analysis,
                      KernelFusionInterface* fusion_interface = nullptr,
                      mlir::MLIRContext* mlir_context = nullptr,
                      bool use_heuristic = true);
@@ -51,8 +55,9 @@ class CoalescingAnalysis {
 
  private:
   bool ComputeCoalescingForAllOperands(
-      const HloInstruction* instr, const HloInstruction* optional_producer,
-      HloFusionAnalysis::EmitterFusionKind fusion_kind,
+      const HloFusionAdaptor& fusion_adaptor,
+      absl::Span<const HloInstruction* const> operands,
+      const HloFusionAnalysis& fusion_analysis,
       KernelFusionInterface* fusion_interface, mlir::MLIRContext* mlir_context);
 
   absl::flat_hash_map<const HloInstruction*, bool> coalescing_per_operand_;

@@ -31,8 +31,8 @@ limitations under the License.
 #include "xla/stream_executor/gpu/gpu_stream.h"
 #include "xla/stream_executor/gpu/gpu_timer.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
-#include "xla/stream_executor/multi_platform_manager.h"
 #include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/types.h"
 #include "xla/xla_data.pb.h"
@@ -74,7 +74,7 @@ PrimitiveType Get(bfloat16) { return PrimitiveType::BF16; }
 
 se::StreamExecutor* GetGpuExecutor() {
   auto* platform =
-      se::MultiPlatformManager::PlatformWithName(se::GpuPlatformName()).value();
+      se::PlatformManager::PlatformWithName(se::GpuPlatformName()).value();
   return platform->ExecutorForDevice(0).value();
 }
 
@@ -93,7 +93,7 @@ TEST_P(TopkTest, TopKFloat) {
 
   auto* executor = GetGpuExecutor();
   se::Stream stream(executor);
-  stream.Init();
+  CHECK_OK(stream.Initialize());
   ASSERT_TRUE(stream.ok());
 
   const auto [n_kb, k, batch_size, offset] = GetParam();
@@ -107,8 +107,8 @@ TEST_P(TopkTest, TopKFloat) {
                 output_indices.is_null()));
 
   auto source = RandomVec<T>(n * batch_size);
-  stream.ThenMemcpy(input_buffer.ptr(), source.data(),
-                    n * batch_size * sizeof(T));
+  CHECK_OK(stream.Memcpy(input_buffer.ptr(), source.data(),
+                         n * batch_size * sizeof(T)));
 
   ASSERT_TRUE(RunTopk(&stream, Get(T()), *input_buffer, n, *output_values,
                       *output_indices, k, batch_size)
@@ -116,8 +116,8 @@ TEST_P(TopkTest, TopKFloat) {
   std::vector<T> got(k);
   ASSERT_TRUE(stream.BlockHostUntilDone().ok());
   for (int i = 0; i < batch_size; i++) {
-    stream.ThenMemcpy(got.data(), output_values->GetSlice(k * i, k),
-                      k * sizeof(T));
+    CHECK_OK(stream.Memcpy(got.data(), output_values->GetSlice(k * i, k),
+                           k * sizeof(T)));
     std::vector<T> slice(source.data() + n * i, source.data() + n * (i + 1));
     std::sort(slice.begin(), slice.end(), std::greater<T>());
     slice.resize(k);
@@ -131,7 +131,7 @@ TEST_P(TopkTest, TopKPackedNegative) {
 
   auto* executor = GetGpuExecutor();
   se::Stream stream(executor);
-  stream.Init();
+  CHECK_OK(stream.Initialize());
   ASSERT_TRUE(stream.ok());
 
   const auto [n_kb, k, batch_size, offset] = GetParam();
@@ -145,8 +145,8 @@ TEST_P(TopkTest, TopKPackedNegative) {
                 output_indices.is_null()));
 
   auto source = RandomVecNegative<T>(n * batch_size);
-  stream.ThenMemcpy(input_buffer.ptr(), source.data(),
-                    n * batch_size * sizeof(T));
+  CHECK_OK(stream.Memcpy(input_buffer.ptr(), source.data(),
+                         n * batch_size * sizeof(T)));
 
   ASSERT_TRUE(RunTopk(&stream, Get(T()), *input_buffer, n, *output_values,
                       *output_indices, k, batch_size)
@@ -154,8 +154,8 @@ TEST_P(TopkTest, TopKPackedNegative) {
   std::vector<T> got(k);
   ASSERT_TRUE(stream.BlockHostUntilDone().ok());
   for (int i = 0; i < batch_size; i++) {
-    stream.ThenMemcpy(got.data(), output_values->GetSlice(k * i, k),
-                      k * sizeof(T));
+    CHECK_OK(stream.Memcpy(got.data(), output_values->GetSlice(k * i, k),
+                           k * sizeof(T)));
     std::vector<T> slice(source.data() + n * i, source.data() + n * (i + 1));
     std::sort(slice.begin(), slice.end(), std::greater<T>());
     slice.resize(k);
@@ -190,7 +190,7 @@ void BM_SmallTopk(benchmark::State& state) {
 
   auto* executor = GetGpuExecutor();
   se::Stream stream(executor);
-  stream.Init();
+  CHECK_OK(stream.Initialize());
   ASSERT_TRUE(stream.ok());
 
   auto input_buffer = executor->AllocateOwnedArray<T>(n * batch_size),
@@ -208,11 +208,11 @@ void BM_SmallTopk(benchmark::State& state) {
   // time to generate random data)
   for (size_t i = 0; i < batch_size; i++) {
     auto slice = input_buffer->GetSlice(i * n, n);
-    stream.ThenMemcpy(&slice, source.data(), n * sizeof(T));
+    CHECK_OK(stream.Memcpy(&slice, source.data(), n * sizeof(T)));
   }
 
   for (auto _ : state) {
-    auto timer = se::gpu::GpuTimer::Create(se::gpu::AsGpuStream(&stream));
+    auto timer = se::gpu::GpuTimer::Create(&stream);
     CHECK_OK(timer.status());
     CHECK_OK(RunTopk(&stream, Get(T()), *input_buffer, n, *output_values,
                      *output_indices, k, batch_size));
