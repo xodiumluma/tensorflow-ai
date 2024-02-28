@@ -765,7 +765,7 @@ pywrap_tensorflow_macro(
         "//tensorflow/cc/saved_model:fingerprinting_impl",
         "//tensorflow/cc/saved_model:loader_lite_impl",
         "//tensorflow/cc/saved_model:metrics_impl",
-        "//tensorflow/compiler/mlir/quantization/stablehlo/cc:static_range_ptq_impl",
+        "//tensorflow/compiler/mlir/quantization/stablehlo/python:pywrap_quantization_lib_impl",
         "//tensorflow/compiler/mlir/quantization/tensorflow/python:quantize_model_cc_impl",
         "//tensorflow/compiler/mlir/tensorflow/c:mlir_c_api_registration",
         "//tensorflow/compiler/tf2tensorrt:op_converter_registry_impl",
@@ -858,9 +858,9 @@ pywrap_tensorflow_macro(
         # nvidia standalone wheels into pywrap_tensorflow_internal. We might be
         # able to remove this in the future, as these stubs should already
         # be brought in via other dependencies.
-        "@local_tsl//tsl/cuda:cudnn",
-        "@local_tsl//tsl/cuda:cufft",
-        "@local_tsl//tsl/cuda:nccl_rpath",
+        "@local_xla//xla/tsl/cuda:cudnn",
+        "@local_xla//xla/tsl/cuda:cufft",
+        "@local_xla//xla/tsl/cuda:nccl_rpath",
     ])) + if_xla_available([
         "//tensorflow/compiler/aot:tfcompile_lib",
     ]) + tf_monitoring_python_deps() + tf_additional_plugin_deps() + tf_additional_profiler_deps() + tf_additional_binary_deps(),

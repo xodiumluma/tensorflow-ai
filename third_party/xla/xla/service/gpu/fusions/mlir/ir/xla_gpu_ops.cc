@@ -16,15 +16,53 @@ limitations under the License.
 #include "xla/service/gpu/fusions/mlir/ir/xla_gpu_ops.h"
 
 #include "llvm/ADT/TypeSwitch.h"  // IWYU pragma: keep
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/DialectImplementation.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project  // IWYU pragma: keep
 #include "mlir/IR/PatternMatch.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/IR/SymbolTable.h"  // from @llvm-project
 #include "mlir/IR/TypeUtilities.h"  // from @llvm-project  // IWYU pragma: keep
+#include "mlir/Transforms/InliningUtils.h"  // from @llvm-project
 #include "xla/service/gpu/fusions/mlir/ir/xla_gpu_dialect.cc.inc"
 
 namespace xla {
 namespace gpu {
+namespace {
+struct XlaGpuInlinerInterface : public mlir::DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+  // Returns true if the given operation 'callable', that implements the
+  // 'CallableOpInterface', can be inlined into the position given call
+  // operation 'call', that is registered to the current dialect and implements
+  // the `CallOpInterface`. 'wouldBeCloned' is set to true if the region of the
+  // given 'callable' is set to be cloned during the inlining process, or false
+  // if the region is set to be moved in-place (i.e. no duplicates would be
+  // created).
+  bool isLegalToInline(mlir::Operation *call, mlir::Operation *callable,
+                       bool wouldBeCloned) const final {
+    if (!wouldBeCloned) {
+      // If no duplicate would be created, 'call' is likely the only caller of
+      // 'callable'.
+      return true;
+    }
+    // TODO(akuegel): Implement logic to decide when inlining makes sense.
+    return false;
+  }
+  // Returns true if the given operation 'op', that is registered to this
+  // dialect, can be inlined into the given region, false otherwise.
+  // 'wouldBeCloned' is set to true if the given 'op' is set to be cloned
+  // during the inlining process, or false if the operation is set to be moved
+  // in-place(i.e. no duplicates would be created). 'valueMapping' contains any
+  // remapped values from within the 'src' region. This can be used to examine
+  // what values may potentially replace the operands to 'op'.
+  bool isLegalToInline(mlir::Operation *op, mlir::Region *dest,
+                       bool wouldBeCloned,
+                       mlir::IRMapping &valueMapping) const final {
+    // We allow any op from the xla_gpu dialect to be inlined.
+    return true;
+  }
+};
+}  // namespace
 
 void XlaGpuDialect::initialize() {
   addOperations<
@@ -32,6 +70,29 @@ void XlaGpuDialect::initialize() {
 #include "xla/service/gpu/fusions/mlir/ir/xla_gpu_ops.cc.inc"
 #undef GET_OP_LIST
       >();
+  addInterfaces<XlaGpuInlinerInterface>();
+}
+
+mlir::LogicalResult PureCallOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbolTable) {
+  auto callee = getCalleeAttr();
+  auto function =
+      symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(*this, callee);
+  if (!function) {
+    return emitError("'f' attribute refers to an undefined function: ")
+           << callee;
+  }
+
+  int func_arg_count = function.getFunctionType().getNumInputs();
+  int arg_count = getOperands().size();
+
+  if (arg_count != func_arg_count) {
+    return emitError() << "argument count mismatch: 'operands' has "
+                       << arg_count << " arguments, but '" << callee
+                       << "' expects " << func_arg_count;
+  }
+
+  return mlir::success();
 }
 
 }  // namespace gpu
