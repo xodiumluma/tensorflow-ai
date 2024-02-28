@@ -22,11 +22,12 @@ limitations under the License.
 #include <optional>
 #include <set>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "nanobind/nanobind.h"
+#include "nanobind/nb_defs.h"
 #include "absl/base/casts.h"
 // clang-format off
 // Must be included first
@@ -51,7 +52,9 @@ limitations under the License.
 #include "pybind11/numpy.h"  // from @pybind11
 #include "pybind11/pybind11.h"  // from @pybind11
 #include "pybind11/pytypes.h"  // from @pybind11
+#include "pybind11/stl.h"  // from @pybind11
 #include "pybind11/stl_bind.h"  // from @pybind11
+#include "pybind11_abseil/absl_casters.h"  // from @pybind11_abseil
 #include "xla/layout_util.h"
 #include "xla/pjrt/distributed/client.h"
 #include "xla/pjrt/distributed/distributed.h"
@@ -71,6 +74,7 @@ limitations under the License.
 
 #include "xla/pjrt/cpu/cpu_client.h"
 #include "xla/pjrt/distributed/key_value_store_interface.h"
+#include "xla/pjrt/exceptions.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -113,6 +117,7 @@ limitations under the License.
 namespace xla {
 namespace {
 
+namespace nb = nanobind;
 namespace py = pybind11;
 
 bool IsOptimizedBuild() {
@@ -159,11 +164,34 @@ static void Init(py::module_& m) {
   InitializeAbslLogging();
 #endif  // PLATFORM_GOOGLE
 
+  // Normally this would happen at the start of NB_MODULE, but since this is a
+  // pybind11 module we have to do this ourselves.
+  nb::detail::init(NB_DOMAIN_STR);
+
+  // We seem to get a fair number of leak warnings from nanobind. It's unclear
+  // whether these are false positives or not.
+  nb::set_leak_warnings(false);
+
   tsl::ImportNumpy();
+
+  nb::module_ m_nb = nb::cast<nb::module_>(nb::borrow(m.ptr()));
 
   // Exceptions
   py::register_exception<XlaRuntimeError>(m, "XlaRuntimeError",
                                           PyExc_RuntimeError);
+
+  // TODO(phawkins): use nb::exception<> once we have migrated all the pybind11
+  // code to nanobind. We use nb::register_exception_translator because we don't
+  // want to define the exception twice.
+  nb::register_exception_translator(
+      [](const std::exception_ptr& p, void* payload) {
+        try {
+          std::rethrow_exception(p);
+        } catch (const XlaRuntimeError& e) {
+          PyErr_SetString(reinterpret_cast<PyObject*>(payload), e.what());
+        }
+      },
+      nb::getattr(m_nb, "XlaRuntimeError").ptr());
 
   // Types
   py::enum_<PrimitiveType>(m, "PrimitiveType")
@@ -434,7 +462,7 @@ static void Init(py::module_& m) {
              PjRtClient::HostBufferSemantics::kImmutableUntilTransferCompletes)
       .value("ZERO_COPY", PjRtClient::HostBufferSemantics::kZeroCopy);
 
-  jax::BuildWeakrefLRUCacheAPI(m);
+  jax::BuildWeakrefLRUCacheAPI(m_nb);
 
   py::class_<PyClient, std::shared_ptr<PyClient>> py_local_client(m, "Client");
   py_local_client.def_property_readonly("platform", &PyClient::platform_name)
@@ -800,7 +828,17 @@ static void Init(py::module_& m) {
            })
       .def("cost_analysis",
            xla::ValueOrThrowWrapper(&PyLoadedExecutable::GetCostAnalysis))
-      .def_property_readonly("traceback", &PyLoadedExecutable::traceback)
+      .def_property_readonly(
+          "traceback",
+          // TODO(phawkins): just use &PyLoadedExecutable::traceback when
+          // nanobind port is complete.
+          [](PyLoadedExecutable* e) -> py::object {
+            if (e->traceback()) {
+              return py::reinterpret_borrow<py::object>(e->traceback()->ptr());
+            } else {
+              return py::none();
+            }
+          })
       .def_property_readonly("fingerprint",
                              [](PyLoadedExecutable* exec) -> py::object {
                                if (exec->fingerprint().has_value()) {
@@ -842,15 +880,15 @@ static void Init(py::module_& m) {
           return xla::ValueOrThrow(
               CudaArrayInterfaceToBuffer(cai, std::move(cuda_client)));
         });
-  BuildProfilerSubmodule(&m);
+  BuildProfilerSubmodule(m_nb);
   BuildOpsSubmodule(&m);
   BuildOutfeedReceiverSubmodule(&m);
-  BuildPytreeSubmodule(m);
+  BuildPytreeSubmodule(m_nb);
   jax::BuildJaxjitSubmodule(m);
   jax::BuildPmapSubmodule(m);
   jax::BuildPjitSubmodule(m);
   jax::BuildTransferGuardSubmodule(m);
-  BuildTracebackSubmodule(m);
+  BuildTracebackSubmodule(m_nb);
   BuildMlirSubmodule(m);
   BuildCustomCallShardingPybindAPI(m);
 
