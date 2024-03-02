@@ -26,9 +26,9 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "nanobind/nanobind.h"
-#include "nanobind/nb_defs.h"
 #include "absl/base/casts.h"
+#include "third_party/nanobind/include/nanobind/nanobind.h"
+#include "third_party/nanobind/include/nanobind/nb_defs.h"
 // clang-format off
 // Must be included first
 #include "absl/strings/str_cat.h"
@@ -78,6 +78,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_c_api_client.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/custom_call_sharding.h"
 #include "xla/python/dlpack.h"
@@ -92,7 +93,6 @@ limitations under the License.
 #include "xla/python/pprof_profile_builder.h"
 #include "xla/python/profiler.h"
 #include "xla/python/py_array.h"
-#include "xla/python/py_buffer.h"
 #include "xla/python/py_compile_only_client.h"
 #include "xla/python/py_device_list.h"
 #include "xla/python/py_executable.h"
@@ -453,6 +453,8 @@ static void Init(py::module_& m) {
              return devices;
            });
 
+  py::class_<PjRtLayout>(m, "PjRtLayout").def("__str__", &PjRtLayout::ToString);
+
   // Local XLA client methods.
 
   py::enum_<PjRtClient::HostBufferSemantics>(m, "HostBufferSemantics")
@@ -752,6 +754,16 @@ static void Init(py::module_& m) {
                      &CompiledMemoryStats::alias_size_in_bytes)
       .def_readwrite("temp_size_in_bytes",
                      &CompiledMemoryStats::temp_size_in_bytes)
+      .def_readwrite("host_generated_code_size_in_bytes",
+                     &CompiledMemoryStats::host_generated_code_size_in_bytes)
+      .def_readwrite("host_argument_size_in_bytes",
+                     &CompiledMemoryStats::host_argument_size_in_bytes)
+      .def_readwrite("host_output_size_in_bytes",
+                     &CompiledMemoryStats::host_output_size_in_bytes)
+      .def_readwrite("host_alias_size_in_bytes",
+                     &CompiledMemoryStats::host_alias_size_in_bytes)
+      .def_readwrite("host_temp_size_in_bytes",
+                     &CompiledMemoryStats::host_temp_size_in_bytes)
       .def_property_readonly("serialized_hlo_proto",
                              [](const CompiledMemoryStats& cms) -> py::bytes {
                                return py::bytes(cms.serialized_hlo_proto);
@@ -887,7 +899,7 @@ static void Init(py::module_& m) {
   jax::BuildJaxjitSubmodule(m);
   jax::BuildPmapSubmodule(m);
   jax::BuildPjitSubmodule(m);
-  jax::BuildTransferGuardSubmodule(m);
+  jax::BuildTransferGuardSubmodule(m_nb);
   BuildTracebackSubmodule(m_nb);
   BuildMlirSubmodule(m);
   BuildCustomCallShardingPybindAPI(m);

@@ -830,11 +830,16 @@ class HloInstruction {
       const Shape& shape, HloInstruction* a, const CholeskyOptions& options);
 
   // Creates a dot op with operands 'lhs' and 'rhs' with contracting and batch
-  // dimensions specified in 'dimension_numbers'.
+  // dimensions specified in 'dimension_numbers'. If 'sparsity' is set, then
+  // 'sparse_meta' must also be present (and have the same size).
+  // Note: 'sparsity' argument is eventually moved in the HloDotInstruction
+  // constructor, so no extra copies are created.
   static std::unique_ptr<HloInstruction> CreateDot(
       const Shape& shape, HloInstruction* lhs, HloInstruction* rhs,
       const DotDimensionNumbers& dimension_numbers,
-      const PrecisionConfig& precision_config);
+      const PrecisionConfig& precision_config,
+      std::vector<SparsityDescriptor> sparsity = {},
+      absl::Span<HloInstruction* const> sparse_meta = {});
 
   // Creates a reduce-precision op, where operand is the data to reduce in
   // precision, and exponent_bits and mantissa_bits describe the precision to
@@ -946,6 +951,21 @@ class HloInstruction {
       absl::Span<const ReplicaGroup> replica_groups, bool constrain_layout,
       const std::optional<int64_t>& channel_id,
       const std::optional<int64_t>& split_dimension = std::nullopt);
+
+  // Creates a communication instruction that broadcasts data cross replicas.
+  // Data is sent from to the first replica id in each group to the other ids in
+  // the same group. If a replica id is not a in any replica group, the output
+  // on that replica is a tensor consists of 0(s) in `shape`.
+  static std::unique_ptr<HloInstruction> CreateCollectiveBroadcast(
+      const Shape& shape, absl::Span<HloInstruction* const> operand,
+      absl::Span<const ReplicaGroup> replica_groups, bool constrain_layout,
+      const std::optional<int64_t>& channel_id);
+
+  static std::unique_ptr<HloInstruction> CreateCollectiveBroadcast(
+      const Shape& shape, HloInstruction* input, HloInstruction* output,
+      HloInstruction* input_start_indices, HloInstruction* output_start_indices,
+      absl::Span<const ReplicaGroup> replica_groups, bool constrain_layout,
+      const std::optional<int64_t>& channel_id);
 
   // Creates a communication instruction that permutes data cross replicas.
   // Data is sent/received according to the (source_replica_id,

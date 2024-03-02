@@ -86,6 +86,10 @@ void MergeOptions(const protobuf::MessageLite& source,
 
 using TraceMeMetadata = std::vector<std::pair<StringPiece, string>>;
 
+// Maps the index of dataset elements to a globally shuffled index. See the
+// comment for IteratorContext::Params::index_mapper for more details.
+using IndexMapperFn = std::function<std::optional<int64_t>(int64_t)>;
+
 constexpr char kTFDataFunction[] = "_tf_data_function";
 
 constexpr int kInfiniteCardinality = -1;
@@ -787,13 +791,15 @@ class IteratorContext {
     RunMode run_mode = RunMode::DEFAULT;
 
     // Maps the index of dataset elements to a shuffled index. In other words,
-    // given an index i, returns the permuted index p(i) for the iterator. Used
-    // to support global shuffling of datasets that support random access.
-    std::function<int64_t(int64_t)> index_mapper = nullptr;
+    // given an index i, returns the permuted index p(i) for the iterator.
+    // Returns `std::nullopt` if the input index is out of range. Used to
+    // support global shuffling of datasets that support random access.
+    IndexMapperFn index_mapper = nullptr;
 
-    // This is set when restoring a globally shuffled iterator. Records the
-    // number of elements that have been produced prior to the checkpoint.
-    std::optional<int64_t> element_count = std::nullopt;
+    // Records the number of elements that have been produced prior to a
+    // checkpoint. This is set by globally shuffled iterators so that upstream
+    // iterators can restore the element counts in the random access mode.
+    std::optional<int64_t> restored_element_count = std::nullopt;
   };
 
   explicit IteratorContext(IteratorContext* ctx)
@@ -882,11 +888,11 @@ class IteratorContext {
 
   RunMode run_mode() { return params_.run_mode; }
 
-  std::function<int64_t(int64_t)> index_mapper() const {
-    return params_.index_mapper;
-  }
+  IndexMapperFn index_mapper() const { return params_.index_mapper; }
 
-  std::optional<int64_t> element_count() const { return params_.element_count; }
+  std::optional<int64_t> restored_element_count() const {
+    return params_.restored_element_count;
+  }
 
   void SetModel(std::shared_ptr<model::Model> model) { params_.model = model; }
 
@@ -1047,10 +1053,6 @@ class IteratorBase : public Checkpointable {
   // Returns a string that identifies the sequence of iterators leading up to
   // this iterator.
   virtual const string& prefix() const = 0;
-
-  // Returns a string identifying the iterator, e.g. "ParallelMapDatasetV2:<id>"
-  // or "ParallelMapDatasetV2:<user defined name>".
-  virtual const string& name() const = 0;
 
   // Indicates whether the iterator is compatible with symbolic checkpointing.
   virtual bool SymbolicCheckpointCompatible() const { return false; }
@@ -1447,8 +1449,6 @@ class DatasetBaseIterator : public IteratorBase {
   }
 
   const string& prefix() const override { return params_.prefix; }
-
-  const string& name() const override { return dataset()->metadata().name(); }
 
   // Returns a name to be used for the TraceMe event.
   //
