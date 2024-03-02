@@ -190,3 +190,11 @@ build:ios_fat --ios_multi_cpus=armv7,arm64,i386,x86_64
 build:monolithic --define framework_shared_object=false
 build:monolithic --define tsl_protobuf_header_only=false
 build:monolithic --experimental_link_static_libraries_once=false # b/229868128
+
+# MKL on macOs is not supported
+# Set the TF_MKL_ROOT before building so that you can use a local MKL rather than 
+# retrieving it from the pipes
+build:mkl --define=build_with_mkl=true --define=enable_mkl=true
+build:mkl --define=tensorflow_mkldnn_contraction_kernel=0
+build:mkl --define=build_with_openmp=true
+build:mkl -c opt
