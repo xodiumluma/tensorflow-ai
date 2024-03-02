@@ -186,12 +186,13 @@ cc_library(
         "//xla:status",
         "//xla:status_macros",
         "//xla:statusor",
-        "//xla:types",
         "//xla:xla_data_proto_cc",
         "//xla/pjrt:exceptions",
         "//xla/python/ifrt",
+        "//xla/python/pjrt_ifrt",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:protobuf",
         "@pybind11",
         "@pybind11_abseil//pybind11_abseil:absl_casters",
@@ -286,7 +287,6 @@ cc_library(
     name = "py_client",
     srcs = [
         "py_array.cc",
-        "py_buffer.cc",
         "py_client.cc",
         "py_compile_only_client.cc",
         "py_device_list.cc",
@@ -297,7 +297,6 @@ cc_library(
     ],
     hdrs = [
         "py_array.h",
-        "py_buffer.h",
         "py_client.h",
         "py_compile_only_client.h",
         "py_device_list.h",
@@ -458,10 +457,11 @@ cc_library(
         ":traceback",
         ":types",
         ":util",
-        "//xla:types",
         "//xla:util",
+        "//xla/pjrt:exceptions",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_compiler",
+        "//xla/python/pjrt_ifrt",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -877,12 +877,10 @@ cc_library(
     visibility = [":friends"],
     deps = [
         # placeholder for index annotation deps
-        "@com_google_absl//absl/base:core_headers",
-        "//xla:status",
+        "@com_google_absl//absl/functional:function_ref",
+        "@com_google_absl//absl/status",
+        "//third_party/nanobind",
         "//xla:util",
-        "//xla/pjrt:status_casters",
-        "@pybind11",
-        "@pybind11_abseil//pybind11_abseil:absl_casters",
     ],
 )
 
@@ -921,6 +919,7 @@ cc_library(
     deps = [
         ":nb_helpers",
         # placeholder for index annotation deps
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:node_hash_map",
         "@com_google_absl//absl/strings",
@@ -1126,6 +1125,7 @@ cc_library(
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_common",
         "//xla/pjrt:pjrt_compiler",
+        "//xla/pjrt:pjrt_layout",
         "//xla/pjrt:status_casters",
         "//xla/pjrt/c:pjrt_c_api_hdrs",
         "//xla/pjrt/cpu:cpu_client",

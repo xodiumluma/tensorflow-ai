@@ -35,6 +35,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/layout.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
+#include "xla/pjrt/c/pjrt_c_api_profiler_extension.h"
 #include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
@@ -49,6 +50,8 @@ limitations under the License.
 #include "tsl/platform/logging.h"
 #include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
+#include "tsl/profiler/lib/connected_traceme.h"
+#include "tsl/profiler/lib/context_types.h"
 
 namespace pjrt {
 
@@ -447,15 +450,6 @@ static absl::StatusOr<PJRT_NamedValue> ConvertToPjRtNamedValue(
     c_value.float_value = std::get<float>(value);
     c_value.value_size = 1;
   } else if (std::holds_alternative<bool>(value)) {
-    // TODO: b/300294893 - Remove this after 12 weeks (12/06/2023) as that is
-    // how long we support old behavior for
-    if (api_minor_version < 30) {
-      return absl::InvalidArgumentError(absl::StrCat(
-          "Client cannot provide this option for API versions "
-          "less than 0.30. The framework PJRT API version is ",
-          PJRT_API_MAJOR, ".", PJRT_API_MINOR,
-          "and the plugin minor version is ", api_minor_version, "."));
-    }
     c_value.type = PJRT_NamedValue_Type::PJRT_NamedValue_kBool;
     c_value.bool_value = std::get<bool>(value);
     c_value.value_size = 1;
@@ -969,6 +963,21 @@ absl::StatusOr<xla::CompiledMemoryStats> GetCompiledMemoryStats(
   results.host_alias_size_in_bytes = args.host_alias_size_in_bytes;
   results.host_temp_size_in_bytes = args.host_temp_size_in_bytes;
   return results;
+}
+
+PJRT_Profiler_Extension CreatePjrtProfilerExtension(
+    absl::string_view traceme_name) {
+  tsl::profiler::TraceMeProducer producer(
+      traceme_name, tsl::profiler::ContextType::kPjrtLibraryCall);
+  int64_t traceme_context_id = producer.GetContextId();
+  PJRT_Profiler_Extension profiler_extension{
+      /*struct_size=*/PJRT_Profiler_Extension_STRUCT_SIZE,
+      /*type=*/PJRT_Extension_Type::PJRT_Extension_Type_Profiler,
+      /*next=*/nullptr,
+      /*profiler_api=*/nullptr,
+      /*traceme_context_id=*/traceme_context_id,
+  };
+  return profiler_extension;
 }
 
 }  // namespace pjrt

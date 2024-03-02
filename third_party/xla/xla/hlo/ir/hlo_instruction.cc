@@ -755,6 +755,17 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
           /*channel_id=*/channel_id, split_dimension);
       break;
     }
+    case HloOpcode::kCollectiveBroadcast: {
+      std::optional<int64_t> channel_id;
+      if (proto.channel_id() > 0) {
+        channel_id = proto.channel_id();
+      }
+      auto replica_groups = std::vector<ReplicaGroup>(
+          proto.replica_groups().begin(), proto.replica_groups().end());
+      instruction = CreateCollectiveBroadcast(
+          shape, all_operands(), replica_groups, false, channel_id);
+      break;
+    }
     case HloOpcode::kCollectivePermute:
     case HloOpcode::kCollectivePermuteStart: {
       TF_RET_CHECK(proto.operand_ids().size() == 1 ||
@@ -1071,16 +1082,27 @@ StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
       instruction = CreateIota(shape, proto.dimensions(0));
       break;
     case HloOpcode::kDot: {
+      int expected_operands =
+          HloDotInstruction::kOperands + proto.dot_sparsity_size();
+      TF_RET_CHECK(proto.dot_sparsity_size() <= HloDotInstruction::kOperands)
+          << "Too many sparse dot descriptors: " << proto.dot_sparsity_size();
+      TF_RET_CHECK(proto.operand_ids_size() == expected_operands)
+          << proto.opcode() << " instruction should have " << expected_operands
+          << " operands but sees " << proto.operand_ids_size();
       TF_RET_CHECK(proto.has_dot_dimension_numbers())
           << "Dot instruction should have dot_dimension_numbers.";
       TF_RET_CHECK(absl::c_all_of(proto.precision_config().operand_precision(),
                                   PrecisionConfig::Precision_IsValid));
       PrecisionConfig precision_config = proto.precision_config();
       precision_config.mutable_operand_precision()->Resize(
-          proto.operand_ids_size(), PrecisionConfig::DEFAULT);
+          HloDotInstruction::kOperands, PrecisionConfig::DEFAULT);
+      std::vector<SparsityDescriptor> sparsity(proto.dot_sparsity().begin(),
+                                               proto.dot_sparsity().end());
+      auto operand_vector = all_operands();
       instruction = std::make_unique<HloDotInstruction>(
           shape, operands(0), operands(1), proto.dot_dimension_numbers(),
-          precision_config);
+          precision_config, std::move(sparsity),
+          absl::MakeSpan(operand_vector).subspan(HloDotInstruction::kOperands));
       break;
     }
     case HloOpcode::kDomain: {
@@ -1450,9 +1472,12 @@ HloInstruction::CreateTriangularSolve(const Shape& shape, HloInstruction* a,
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateDot(
     const Shape& shape, HloInstruction* lhs, HloInstruction* rhs,
     const DotDimensionNumbers& dimension_numbers,
-    const PrecisionConfig& precision_config) {
+    const PrecisionConfig& precision_config,
+    std::vector<SparsityDescriptor> sparsity,
+    absl::Span<HloInstruction* const> sparse_meta) {
   return std::make_unique<HloDotInstruction>(shape, lhs, rhs, dimension_numbers,
-                                             precision_config);
+                                             precision_config,
+                                             std::move(sparsity), sparse_meta);
 }
 
 /* static */ std::unique_ptr<HloInstruction>
@@ -1526,6 +1551,16 @@ HloInstruction::CreateAllReduceStart(
   return std::make_unique<HloAllToAllInstruction>(
       shape, operands, replica_groups, constrain_layout, channel_id,
       split_dimension);
+}
+
+/* static */ std::unique_ptr<HloInstruction>
+HloInstruction::CreateCollectiveBroadcast(
+    const Shape& shape, absl::Span<HloInstruction* const> operands,
+    absl::Span<const ReplicaGroup> replica_groups, bool constrain_layout,
+    const std::optional<int64_t>& channel_id) {
+  return std::make_unique<HloCollectiveBroadcastInstruction>(
+      HloOpcode::kCollectiveBroadcast, shape, operands, replica_groups,
+      constrain_layout, channel_id);
 }
 
 /* static */ std::unique_ptr<HloInstruction>
@@ -2077,6 +2112,7 @@ bool HloInstruction::HasSideEffectNoRecurse() const {
     case HloOpcode::kAllReduceDone:
     case HloOpcode::kAllGatherStart:
     case HloOpcode::kAllGatherDone:
+    case HloOpcode::kCollectiveBroadcast:
     case HloOpcode::kCollectivePermuteStart:
     case HloOpcode::kCollectivePermuteDone:
       return true;
@@ -2318,6 +2354,7 @@ std::unique_ptr<HloInstruction> HloInstruction::CloneWithNewOperands(
     case HloOpcode::kReduceScatter:
     case HloOpcode::kAllReduceStart:
     case HloOpcode::kAllToAll:
+    case HloOpcode::kCollectiveBroadcast:
     case HloOpcode::kCollectivePermute:
     case HloOpcode::kCollectivePermuteStart:
     case HloOpcode::kInfeed:
@@ -4035,6 +4072,8 @@ Status HloInstruction::Visit(DfsHloVisitorBase<HloInstructionPtr>* visitor) {
       return visitor->HandleAllReduceDone(this);
     case HloOpcode::kAllToAll:
       return visitor->HandleAllToAll(this);
+    case HloOpcode::kCollectiveBroadcast:
+      return visitor->HandleCollectiveBroadcast(this);
     case HloOpcode::kCollectivePermute:
       return visitor->HandleCollectivePermute(this);
     case HloOpcode::kCollectivePermuteStart:

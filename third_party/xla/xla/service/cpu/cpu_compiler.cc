@@ -63,7 +63,9 @@ limitations under the License.
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
+#ifdef TF_LLVM_X86_AVAILABLE
 #include "llvm/TargetParser/X86TargetParser.h"
+#endif
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"  // from @llvm-project
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"  // from @llvm-project
 #include "mlir/Dialect/Affine/IR/AffineOps.h"  // from @llvm-project
@@ -274,6 +276,7 @@ xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_n_dim(),
         xla::GetDebugOptionsFromFlags().xla_cpu_matmul_tiling_k_dim()};
   }
+#ifdef TF_LLVM_X86_AVAILABLE
   options.enable_avx2 = [&] {
     // Derive whether this is an x86 CPU with AVX2 enabled.
     if (!target_triple.isX86()) return false;
@@ -281,6 +284,9 @@ xla::cpu::HloXlaRuntimePipelineOptions GetHloXlaRuntimePipelineOptions(
     llvm::X86::getFeaturesForCPU(cpu_name, cpu_features);
     return llvm::is_contained(cpu_features, "avx2");
   }();
+#else
+  options.enable_avx2 = false;
+#endif
   options.cpu_name = cpu_name;
   if (xla::GetDebugOptionsFromFlags().xla_cpu_enable_mlir_fusion_outlining()) {
     options.enable_fusion_outlining = true;
@@ -479,7 +485,7 @@ CpuCompiler::CpuCompiler(bool allow_sparse_shapes)
 
 CpuCompiler::CpuCompiler() : CpuCompiler(false) {}
 
-StatusOr<std::vector<std::unique_ptr<Executable>>> CpuCompiler::Compile(
+absl::StatusOr<std::vector<std::unique_ptr<Executable>>> CpuCompiler::Compile(
     std::unique_ptr<HloModuleGroup> module_group,
     std::vector<std::vector<se::StreamExecutor*>> stream_execs,
     const CompileOptions& options) {
@@ -512,7 +518,7 @@ absl::once_flag llvm_command_line_options_initialized;
 // recorded.
 class CollectProfileCandidates : public DfsHloVisitorWithDefault {
  public:
-  static StatusOr<absl::flat_hash_map<const HloInstruction*, int64_t>>
+  static absl::StatusOr<absl::flat_hash_map<const HloInstruction*, int64_t>>
   GetCandidatesForComputation(
       const HloComputation& computation,
       const absl::flat_hash_map<const HloInstruction*, int64_t>&
@@ -835,7 +841,7 @@ Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   }
   pipeline.AddPass<IndexedArrayAnalysisPrinterPass>();
   pipeline.AddPass<TransposeFolding>(
-      [&](const HloInstruction& dot, int64_t operand) -> StatusOr<bool> {
+      [&](const HloInstruction& dot, int64_t operand) -> absl::StatusOr<bool> {
         if (DotImplementationCanHandleTranspose(dot,
                                                 *target_machine_features)) {
           return TransposeFolding::IsRowColumnTransposeDotOperand(dot, operand);
@@ -1089,7 +1095,7 @@ Status CreateHloProfilingArtifacts(
 
 }  // namespace
 
-StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
+absl::StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* /*stream_exec*/,
     const CompileOptions& options) {
   std::unique_ptr<llvm::TargetMachine> jit_target_machine =
@@ -1105,7 +1111,7 @@ StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
   return std::move(module);
 }
 
-StatusOr<std::unique_ptr<BufferAssignment>> CpuCompiler::AssignBuffers(
+absl::StatusOr<std::unique_ptr<BufferAssignment>> CpuCompiler::AssignBuffers(
     HloModule* module, const se::StreamExecutor* /*stream_exec*/) {
   // Select an order for emitting the HLO instructions for each computation.
   // Using this sequence enables tighter buffer liveness analysis and reduced
@@ -1184,7 +1190,7 @@ Status LowerMLIRModule(HloModule* module, mlir::ModuleOp mlir_module,
   return absl::OkStatus();
 }
 
-StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> createMLIRModule(
+absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> createMLIRModule(
     HloModule* module, mlir::MLIRContext& mlir_context,
     BufferAssignment* assignment,
     XlaFrameworkMapping* export_mapping = nullptr) {
@@ -1338,7 +1344,7 @@ std::vector<ComputationToEmit> SubcomputationEmissionOrder(
 
 }  // namespace
 
-StatusOr<std::unique_ptr<CpuExecutable>>
+absl::StatusOr<std::unique_ptr<CpuExecutable>>
 CpuCompiler::CompileLegacyCpuExecutable(std::unique_ptr<HloModule> module) {
   ModuleHook pre_optimization_ir_hook;
   ModuleHook post_optimization_ir_hook;
@@ -1499,11 +1505,12 @@ CpuCompiler::CompileLegacyCpuExecutable(std::unique_ptr<HloModule> module) {
 
 namespace {
 
-StatusOr<std::unique_ptr<XlaRuntimeCpuExecutable>> GetXlaRuntimeCpuExecutable(
-    const HloModule& hlo_module, mlir::ModuleOp mlir_module,
-    absl::string_view entry_point,
-    const XlaFrameworkMapping& xla_framework_mapping,
-    mlir::DialectRegistry* registry) {
+absl::StatusOr<std::unique_ptr<XlaRuntimeCpuExecutable>>
+GetXlaRuntimeCpuExecutable(const HloModule& hlo_module,
+                           mlir::ModuleOp mlir_module,
+                           absl::string_view entry_point,
+                           const XlaFrameworkMapping& xla_framework_mapping,
+                           mlir::DialectRegistry* registry) {
   runtime::JitExecutable::Options opts =
       GetXlaRuntimeJitExecutableOptions(hlo_module, registry);
   std::string serialized_mlir = llvm_ir::DumpToString(mlir_module);
@@ -1521,7 +1528,7 @@ StatusOr<std::unique_ptr<XlaRuntimeCpuExecutable>> GetXlaRuntimeCpuExecutable(
 }
 }  // namespace
 
-StatusOr<std::unique_ptr<CpuExecutable>>
+absl::StatusOr<std::unique_ptr<CpuExecutable>>
 CpuCompiler::CompileXlaRuntimeCpuExecutable(
     std::unique_ptr<HloModule> hlo_module, mlir::DialectRegistry* registry) {
   // Select an order for emitting the HLO instructions for each
@@ -1586,7 +1593,7 @@ CpuCompiler::CompileXlaRuntimeCpuExecutable(
       std::move(xla_runtime_executable));
 }
 
-StatusOr<std::unique_ptr<Executable>> CpuCompiler::RunBackend(
+absl::StatusOr<std::unique_ptr<Executable>> CpuCompiler::RunBackend(
     std::unique_ptr<HloModule> module,
     [[maybe_unused]] se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
@@ -1616,7 +1623,7 @@ StatusOr<std::unique_ptr<Executable>> CpuCompiler::RunBackend(
   return std::unique_ptr<Executable>(std::move(cpu_executable));
 }
 
-StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>>
+absl::StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>>
 CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
                                 const AotCompilationOptions& aot_options) {
   TF_RET_CHECK(!module_group->empty());
@@ -1926,11 +1933,11 @@ class CpuExecutableAotCompilationResult : public AotCompilationResult {
     module_ = hlo_module->Clone();
   }
 
-  StatusOr<std::string> SerializeAsString() const override {
+  absl::StatusOr<std::string> SerializeAsString() const override {
     return proto_.SerializeAsString();
   }
 
-  static StatusOr<std::unique_ptr<CpuExecutableAotCompilationResult>>
+  static absl::StatusOr<std::unique_ptr<CpuExecutableAotCompilationResult>>
   FromString(const std::string& serialized) {
     CompilationResultProto proto;
     if (!proto.ParseFromString(serialized)) {
@@ -1946,7 +1953,7 @@ class CpuExecutableAotCompilationResult : public AotCompilationResult {
         new CpuExecutableAotCompilationResult(proto, std::move(module)));
   }
 
-  StatusOr<std::unique_ptr<Executable>> LoadExecutable(
+  absl::StatusOr<std::unique_ptr<Executable>> LoadExecutable(
       Compiler* compiler, const se::StreamExecutor* stream_exec) const override;
 
   const HloModule* optimized_module() const override { return module_.get(); }
@@ -1966,7 +1973,7 @@ class CpuExecutableAotCompilationResult : public AotCompilationResult {
 
 }  // namespace
 
-StatusOr<std::unique_ptr<Executable>>
+absl::StatusOr<std::unique_ptr<Executable>>
 CpuExecutableAotCompilationResult::LoadExecutable(
     Compiler* compiler, const se::StreamExecutor* stream_exec) const {
   // Recreate HloModule from proto.
@@ -2018,7 +2025,7 @@ CpuExecutableAotCompilationResult::LoadExecutable(
   return cpu_executable;
 }
 
-StatusOr<std::unique_ptr<AotCompilationResult>> CpuCompiler::Export(
+absl::StatusOr<std::unique_ptr<AotCompilationResult>> CpuCompiler::Export(
     Executable* executable) const {
   auto* cpu_executable = tensorflow::down_cast<CpuExecutable*>(executable);
   if (!cpu_executable)
@@ -2036,7 +2043,7 @@ StatusOr<std::unique_ptr<AotCompilationResult>> CpuCompiler::Export(
       cpu_executable->module_name(), cpu_executable->obj_files()[0])};
 }
 
-StatusOr<std::unique_ptr<AotCompilationResult>>
+absl::StatusOr<std::unique_ptr<AotCompilationResult>>
 CpuCompiler::LoadAotCompilationResult(
     const std::string& serialized_aot_result) {
   return CpuExecutableAotCompilationResult::FromString(serialized_aot_result);
