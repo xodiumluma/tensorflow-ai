@@ -226,3 +226,14 @@ build:cuda_clang --config=cuda
 build:cuda_clang --config=tensorrt
 build:cuda_clang --action_env=TF_CUDA_CLANG="1"
 build:cuda_clang --@local_config_cuda//:cuda_compiler=clang
+# Configure compute capabilities with supported GPUs
+# https://developer.nvidia.com/cuda-gpus#compute
+# `compute_XY` turnes on PTX embedding alongside SASS
+# PTX is forward compatible beyond the current compute capability major release
+# SASS only forward compatible inside current major release
+# Eg sm_80 kernels can utilise sm_89 GPUs, but not sm_90 GPUs
+# compute_80 kernels can run on sm_90 GPUs
+build:cuda_clang --repo_env=TF_CUDA_COMPUTE_CAPABILITIES="sm_60,sm_70,sm_80,sm_89,compute_90"
+
+# configure compilation CUDA version and paths + use CUDA Clang toolchain
+build:cuda_clang_official --config=cuda_clang
