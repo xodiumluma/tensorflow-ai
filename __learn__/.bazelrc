@@ -239,3 +239,5 @@ build:cuda_clang --repo_env=TF_CUDA_COMPUTE_CAPABILITIES="sm_60,sm_70,sm_80,sm_8
 build:cuda_clang_official --config=cuda_clang
 build:cuda_clang_official --action_env=TF_CUDA_VERSION="12"
 build:cuda_clang_official --action_env=TF_CUDNN_VERSION="8"
+build:cuda_clang_official --action_env=CUDA_TOOLKIT_PATH="/usr/local/cuda-12.3"
+build:cuda_clang_official --action_env=GCC_HOST_COMPILER_PATH="/dt9/usr/bin/gcc"
