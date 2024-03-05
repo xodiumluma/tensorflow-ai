@@ -1,4 +1,4 @@
-/* Copyright 2019 The OpenXLA Authors.
+/* Copyright 2024 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,11 +13,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_PYTHON_STATUS_CASTERS_H_
-#define XLA_PYTHON_STATUS_CASTERS_H_
-
-// Forwarding header.
-// TODO(phawkins): update users to use the new header location.
-#include "xla/pjrt/status_casters.h"
-
-#endif  // XLA_PYTHON_STATUS_CASTERS_H_
+namespace stream_executor {
+bool IsLibNvPtxCompilerSupported() { return LIBNVPTXCOMPILER_SUPPORT; }
+}  // namespace stream_executor

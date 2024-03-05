@@ -15,6 +15,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/process_function_library_runtime.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -24,6 +25,7 @@ limitations under the License.
 #include <utility>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
 #include "absl/types/variant.h"
@@ -63,12 +65,28 @@ limitations under the License.
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/dump_graph.h"
 #include "tensorflow/core/util/reffed_status_callback.h"
+#include "tsl/platform/status.h"
 #include "tsl/platform/statusor.h"
+#include "tsl/util/env_var.h"
 #if !defined(IS_MOBILE_PLATFORM)
 #include "tensorflow/core/protobuf/remote_tensor_handle.pb.h"
 #endif  // IS_MOBILE_PLATFORM
 
 namespace tensorflow {
+
+namespace {
+
+int64_t GetParallelSubgraphThreshold() {
+  static int64_t parallel_subgraph_threshold = []() {
+    int64_t result;
+    TF_CHECK_OK(tsl::ReadInt64FromEnvVar(
+        "TF_PFLR_PARALLEL_INSTANTIATE_THRESHOLD", 8, &result));
+    return result;
+  }();
+  return parallel_subgraph_threshold;
+}
+
+}  // namespace
 
 const char ProcessFunctionLibraryRuntime::kDefaultFLRDevice[] = "null";
 
@@ -535,25 +553,34 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   const uint64 optimization_start_time_usecs = Env::Default()->NowMicros();
   // Look up for optimized function graph in library. If found, skip
   // `OptimizeFunctionGraph` step.
-  OptimizedFunctionGraph* optimized_graph_proto =
+  std::optional<absl::StatusOr<OptimizedFunctionGraph>> optimized_graph_proto =
       options.lib_def != nullptr
           ? options.lib_def->FindOptimizedFunctionGraph(function_name)
           : lib_def_->FindOptimizedFunctionGraph(function_name);
-  if (optimized_graph_proto != nullptr) {
-    LOG(INFO) << "Found AOT'd graph for function: " << function_name;
-    metrics::UpdateFunctionGraphOptimizationSavingTime(
-        optimized_graph_proto->optimization_time_usecs(),
-        metrics::GraphOptimizationSource::kAot);
-    metrics::IncrementFunctionGraphOptimizationCacheHitCount(
-        1, metrics::GraphOptimizationSource::kAot);
+
+  if (optimized_graph_proto.has_value()) {
+    if (optimized_graph_proto->ok()) {
+      LOG(INFO) << "Found AOT'd graph for function: " << function_name;
+      metrics::UpdateFunctionGraphOptimizationSavingTime(
+          optimized_graph_proto->value().optimization_time_usecs(),
+          metrics::GraphOptimizationSource::kAot);
+      metrics::IncrementFunctionGraphOptimizationCacheHitCount(
+          1, metrics::GraphOptimizationSource::kAot);
+    } else {
+      LOG(WARNING) << "Failed to create AOT'd graph for function: "
+                   << function_name
+                   << " with status: " << optimized_graph_proto->status();
+    }
   }
 
   StatusOr<OptimizedFunctionGraphInfo> optimized_graph_info =
-      optimized_graph_proto == nullptr
+      (!optimized_graph_proto.has_value() ||
+       !optimized_graph_proto.value().ok())
           ? OptimizeFunctionGraphOrReadFromFileCache(
                 function_name, attrs, options, *dev_set, lib_def_,
                 composite_devices, cpu_device, default_device, env_)
-          : OptimizedFunctionGraphInfo::FromProto(*optimized_graph_proto);
+          : OptimizedFunctionGraphInfo::FromProto(
+                std::move(optimized_graph_proto.value().value()));
   if (!optimized_graph_info.ok()) return optimized_graph_info.status();
 
   // Resets the library registration correctly.
@@ -611,16 +638,20 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   const int num_subgraphs = subgraphs->size();
   gtl::InlinedVector<Status, 4> instantiate_status(num_subgraphs);
   BlockingCounter counter(static_cast<int>(num_subgraphs));
-  auto runner = [this, num_subgraphs](std::function<void()> fn) {
-    // NOTE: Only use thread pool to instantiate sub-function when there are
-    // more than 8 sub-functions. We want to avoid cost of switching thread when
-    // there are only a few sub-functions.
-    if (default_thread_pool_ != nullptr && num_subgraphs > 8) {
+  // NOTE: Only use thread pool to instantiate sub-function when there are
+  // more than a threshold (default 8) of sub-functions. We want to avoid cost
+  // of switching thread when there are only a few sub-functions. However, for
+  // very large graphs, it may be necessary to increase this threshold to avoid
+  // running out of memory.
+  std::function<void(std::function<void()>)> runner;
+  if (default_thread_pool_ != nullptr &&
+      num_subgraphs > GetParallelSubgraphThreshold()) {
+    runner = [this](std::function<void()> fn) {
       default_thread_pool_->Schedule(fn);
-    } else {
-      fn();
-    }
-  };
+    };
+  } else {
+    runner = [](std::function<void()> fn) { fn(); };
+  }
 
   // Before instantiating component functions, determine synchronous execution.
   data->enable_sync_execution = false;
@@ -639,7 +670,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   }
 
   // Instantiate each component function (subgraph).
-  for (const auto& pair : *subgraphs) {
+  for (auto& pair : *subgraphs) {
     Status* status = &instantiate_status[i];
     ComponentFunctionData* comp_data = &data->glue_[pair.first];
     comp_data->name = name_generator.GetName();
@@ -649,20 +680,21 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
 
       const string& device_type =
           dev_set->FindDeviceByName(target)->device_type();
-      Graph* subgraph = pair.second.get();
+      std::unique_ptr<Graph> subgraph = std::move(pair.second);
 
       bool ints_on_device =
           (device_type == "TPU" || device_type == "XLA_CPU" ||
            device_type == "XLA_GPU" || options.int_args_and_retvals_on_device);
       Int32FulltypePass int32_fulltype(
           "ProcessFunctionLibraryRuntime::InstantiateMultiDevice");
-      status->Update(int32_fulltype.ProcessGraph(subgraph, ints_on_device));
+      status->Update(
+          int32_fulltype.ProcessGraph(subgraph.get(), ints_on_device));
       if (!status->ok()) {
         counter.DecrementCount();
         return;
       }
       status->Update(UpdateArgAndRetvalMetadata(
-          subgraph, &comp_data->arg_indices, &comp_data->ret_indices,
+          subgraph.get(), &comp_data->arg_indices, &comp_data->ret_indices,
           &comp_data->arg_alloc_attrs, &comp_data->ret_alloc_attrs,
           ints_on_device));
       if (!status->ok()) {
@@ -672,6 +704,11 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
       FunctionDef shard;
       status->Update(
           GraphToFunctionDef(*subgraph, comp_data->name, control_ret, &shard));
+
+      // TODO(b/327983931): `GraphToFunctionDef()` should take a `Graph&&`,
+      // so that the `NodeDef`s can be reused as much as possible.
+      subgraph.reset();
+
       if (!status->ok()) {
         counter.DecrementCount();
         return;
