@@ -251,3 +251,6 @@ build:nvcc_clang --config=cuda
 build:nvcc_clang --action_env=TF_CUDA_CLANG="1"
 build:nvcc_clang --action_env=TF_NVCC_CLANG="1"
 build:nvcc_clang --@local_config_cuda//:cuda_compiler=nvcc
+
+# Set up debugging
+build:dbg -c dbg
