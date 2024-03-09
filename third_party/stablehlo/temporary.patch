@@ -2606,6 +2606,18 @@ diff --ruN a/stablehlo/stablehlo/experimental/transforms/StablehloRefineShapes.c
 +}  // namespace experimental
 +}  // namespace stablehlo
 +}  // namespace mlir
+diff --ruN a/stablehlo/stablehlo/reference/InterpreterOps.cpp b/stablehlo/stablehlo/reference/InterpreterOps.cpp
+--- stablehlo/stablehlo/reference/InterpreterOps.cpp
++++ stablehlo/stablehlo/reference/InterpreterOps.cpp
+@@ -160,7 +160,7 @@
+ SmallVector<InterpreterValue> evalRunParallelOp(
+     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr> &infeed,
+     SmallVector<SmallVector<StringAttr>> programs, SymbolTable &symbolTable) {
+-  llvm::ThreadPool threadPool;
++  llvm::DefaultThreadPool threadPool;
+   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;
+ 
+   uint32_t numReplicas = programs.size();
 diff --ruN a/stablehlo/stablehlo/tests/shape_legalize_to_stablehlo.mlir b/stablehlo/stablehlo/tests/shape_legalize_to_stablehlo.mlir
 --- stablehlo/stablehlo/tests/shape_legalize_to_stablehlo.mlir
 +++ stablehlo/stablehlo/tests/shape_legalize_to_stablehlo.mlir
@@ -2814,6 +2826,25 @@ diff --ruN a/stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp b/stable
      return success();
    }
  };
+diff --ruN a/stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp b/stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
+--- stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
++++ stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
+@@ -146,12 +146,12 @@
+   if (failed(refineValues(rewriter, op, op->getResults(), types)))
+     return failure();
+ 
+-  // This `replaceOpWithIf` call doesn't actually change the IR, but
++  // This `replaceUsesWithIf` call doesn't actually change the IR, but
+   // it does ask the rewriter to visit all the users of this op. There is no
+   // upstream API to achieve this directly, but if it's introduced in the
+   // future, we could use it here.
+-  rewriter.replaceOpWithIf(op, op->getResults(),
+-                           [](OpOperand& use) { return false; });
++  rewriter.replaceUsesWithIf(op, op->getResults(),
++                             [](OpOperand& use) { return false; });
+   return success();
+ }
+ 
 diff --ruN a/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp b/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
 --- stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
 +++ stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
