@@ -254,3 +254,16 @@ build:nvcc_clang --@local_config_cuda//:cuda_compiler=nvcc
 
 # Set up debugging
 build:dbg -c dbg
+# Specify that debug info is included only for files in the tensorflow/ dir
+# Exclude kernels - reduce the size of debug info in the binary
+# Errors can occur of the debug bits in the ELF binary are too large
+# https://github.com/tensorflow/tensorflow/issues/48919
+# For a specific kernel, one can still turn on debug info:
+# --config=dbg --per_file_copt=+tensorflow/core/kernels/identity_op.*@-g
+# xla debug files are included as tensorflow keeps track of xla commits
+build:dbg --per_file_copt=+.,-tensorflow.*,-xla.*@-g0
+build:dbg --per_file_copt=+tensorflow/core/kernels.*@-g0
+# turn off arm_neon https://github.com/tensorflow/tensorflow/issues/33360
+# AWS SDK has to tbe compiled in release mode https://github.com/tensorflow/tensorflow/issues/37498
+build:dbg --copt --DDEBUG_BUILD
+
