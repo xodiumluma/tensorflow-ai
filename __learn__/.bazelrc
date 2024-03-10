@@ -289,3 +289,7 @@ build:nonccl --define=no_nccl_support=true
 # build TF modularly
 build:dynamic_kernels --define=dynamic_loaded_kernels=true
 build:dynamic_kernels --copt=-DAUTOLOAD_DYNAMIC_KERNELS
+
+# prevent host platform configs when cross-compiling
+build:android --noenable_platform_specific_config
+build:ios --noenable_platform_specific_config
