@@ -319,3 +319,11 @@ build:linux --copt="-Wswitch"
 build:linux --copt="-Werror=switch"
 # need this for clang compilation
 build:linux --copt="-Wno-error=unused-but-set-variable"
+
+# build on arm64 linux
+build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
+
+# for Windows MSVC `__cpluscplus` needs this switch to get it right
+# https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cpluscplus/
+build:windows --copt=/Zc:__cpluscplus
+build:windows --host_copt=/Zc:__cpluscplus
