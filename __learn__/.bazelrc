@@ -293,3 +293,14 @@ build:dynamic_kernels --copt=-DAUTOLOAD_DYNAMIC_KERNELS
 # prevent host platform configs when cross-compiling
 build:android --noenable_platform_specific_config
 build:ios --noenable_platform_specific_config
+
+# turn off C++ compiler warnings to prevent huge build logs from building up
+build:android --copt=-w
+build:ios --copt=-w
+build:linux --host_copt=-w
+build:macos --copt=-w
+build:windows --copt=/W0
+build:windows --host_copt=/W0
+
+# turn off most C++ compiler warnings to cut down log sizes
+# allow specific warnings to continue
