@@ -304,3 +304,9 @@ build:windows --host_copt=/W0
 
 # turn off most C++ compiler warnings to cut down log sizes
 # allow specific warnings to continue
+build:linux --copt="-Wno-all"
+build:linux --copt="-Wno-extra"
+build:linux --copt="-Wno-deprecated"
+build:linux --copt="-Wno-deprecated-declarations"
+build:linux --copt="-Wno-ignored-attributes"
+build:linux --copt="-Wno-array-bounds"
