@@ -274,3 +274,18 @@ build:tpu --copt=-DLIBTPU_ON_GCE
 build:tpu --define=enable_mlir_bridge=true
 
 build:tensorrt --repo_env TF_NEED_TENSORRT=1
+
+build:rocm --crosstool_top=@local_config_rocm//crosstool:toolchain
+build:rocm --define=using_rocm_hipcc=true
+build:rocm --define=tensorflow_mkldnn_contraction_kernel=0
+build:rocm --repo_env TF_NEED_ROCM=1
+
+# disable unnecessary features
+build:noaws --define=no_aws_support=true
+build:nogcp --define=no_gcp_support=true
+build:nohdfs --define=no_hdfs_support=true
+build:nonccl --define=no_nccl_support=true
+
+# build TF modularly
+build:dynamic_kernels --define=dynamic_loaded_kernels=true
+build:dynamic_kernels --copt=-DAUTOLOAD_DYNAMIC_KERNELS
