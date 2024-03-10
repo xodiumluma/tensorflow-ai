@@ -310,3 +310,12 @@ build:linux --copt="-Wno-deprecated"
 build:linux --copt="-Wno-deprecated-declarations"
 build:linux --copt="-Wno-ignored-attributes"
 build:linux --copt="-Wno-array-bounds"
+
+# specify unused-result as a linux error
+build:linux --copt="-Wunused-result"
+build:linux --copt="-Werror=unused-result"
+# specify switch as a linux error
+build:linux --copt="-Wswitch"
+build:linux --copt="-Werror=switch"
+# need this for clang compilation
+build:linux --copt="-Wno-error=unused-but-set-variable"
