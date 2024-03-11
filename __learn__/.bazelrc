@@ -327,3 +327,8 @@ build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
 # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cpluscplus/
 build:windows --copt=/Zc:__cpluscplus
 build:windows --host_copt=/Zc:__cpluscplus
+
+# If _USE_MATH_DEFINES is defined, then M_* math constants 
+# are defined by MSVC headers and can be used by TF
+build:windows --copt=/D_USE_MATH_DEFINES
+build:windows --host_copt=/D_USE_MATH_DEFINES
