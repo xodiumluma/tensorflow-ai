@@ -332,3 +332,15 @@ build:windows --host_copt=/Zc:__cpluscplus
 # are defined by MSVC headers and can be used by TF
 build:windows --copt=/D_USE_MATH_DEFINES
 build:windows --host_copt=/D_USE_MATH_DEFINES
+
+# Windows CLI commands are rather short and this needs resolving in TF
+# https://docs.bazel.build/versions/main/windows.html
+build:windows --features=compiler_param_file
+build:windows --features=archive_param_file
+
+# shorten Windows compile times - available from VS 16.4 onwards
+# this project's version is on 16.11
+# https://groups.google.com/a/tensorflow.org/d/topic/build/SsW98Eo7l3o/discussion
+build:windows --copt=/d2ReducedOptimizeHugeFunctions
+build:windows --host_copt=/dReducedOptimizeHugeFunctions
+
