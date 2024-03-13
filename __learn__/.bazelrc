@@ -427,3 +427,21 @@ test:win_clang --host_linkopt=/FORCE:MULTIPLE
 # decide to build either TF 1 or 2
 # @todo - amend v2's define to default behaviour
 build:v2 --define=tf_api_version=2 --action_env=TF2_BEHAVIOR=1
+
+# turn on all XLA targets
+build:cpu_cross --define=with_cross_compiler_support=true
+
+# turn off XLA on mobile
+build:xla --define=with_xla_support=true # @todo: remove; it's on by default
+build:android --define=with_xla_support=false
+build:ios --define=with_xla_support=false
+
+###################### TF REMOTE BUILD ##############################
+# Note: you need to have correct auth creds and permissions
+
+# For any Bazel call, create resultstore URLs
+build:resultstore --google_default_credentials
+build:resultstore --bes_backend=buildeventservice.googleapis.com
+build:resultstore --bes_instance_name="tensorflow-testing"
+build:resultstore --bes_results_url="https://source.cloud.google.com/results/invocations"
+build:resultstore --bes_timeout=600s
