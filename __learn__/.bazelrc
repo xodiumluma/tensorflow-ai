@@ -395,5 +395,20 @@ build:windows --host_linkopt=/OPT:REF
 build:windows --linkopt=/OPT:ICF
 build:windows --host_linkopt=/OPT:ICF
 
-# "scream" when problems crop up
+# be very verbose when problems crop up
 build:windows --verbose_failures
+
+# avoid cache corruption
+# https://github.com/bazelbuild/bazel/issues/3360
+build:linux --experimental_guard_against_concurrent_changes
+
+# set up logs based on length
+build:short_logs --output_filter=DONT_MATCH_ANYTHING
+build_verbose_logs --output_filter=
+
+# Optimise instruction sets
+# @todo: we need a feature in toolchains for avx/avx2
+# so that we can define Windows and Linux options together
+build:avx_linux --copt=-mavx
+build:avx_linux --host_copt=-mavx
+build:avx_win --copt=/arch:AVX
