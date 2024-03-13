@@ -344,3 +344,19 @@ build:windows --features=archive_param_file
 build:windows --copt=/d2ReducedOptimizeHugeFunctions
 build:windows --host_copt=/dReducedOptimizeHugeFunctions
 
+# Turn on Windows runfiles symlink tree
+# Build pip package on Windows without intermediate data file archive
+# The current Aug 2023 build_pip_package uses runfiles symlink tree
+# to decide what to put into Python wheel
+startup --windows_enable_symlinks
+build:winodws --enable_runfiles
+
+# default paths for TF_SYSTEM_LIBS (not for WINDOWS)
+build:linux --define=PREFIX=/usr
+build:linux --define=LIBDIR=$(PREFIX)/lib
+build:linux --define=INCLUDEDIR=$(PREFIX)/include
+build:linux --define=PROTOBUF_INCLUDE_PATH=$(PREFIX)/include
+build:macos --define=PREFIX=/usr
+build:macos --define=LIBDIR=$(PREFIX)/lib
+build:macos --define=INCLUDEDIR=$(PREFIX)/include
+build:macos --define=PROTOBUF_INCLUDE_PATH=$(PREFIX)/include
