@@ -386,3 +386,14 @@ build:winodws --copt=-DWIN32_LEAN_AND_MEAN
 # https://docs.microsoft.com/en-us/cpp/preprocessor/preprocessor-experimental-overview
 build:windows --copt=/Zc:preprocessor
 build:windows --host_copt=/Zc:preprocessor
+
+# Other necessary Windows build options
+build:windows --linkopt=/DEBUG
+build:windows --host_linkopt=/DEBUG
+build:windows --linkopt=/OPT:REF
+build:windows --host_linkopt=/OPT:REF
+build:windows --linkopt=/OPT:ICF
+build:windows --host_linkopt=/OPT:ICF
+
+# "scream" when problems crop up
+build:windows --verbose_failures
