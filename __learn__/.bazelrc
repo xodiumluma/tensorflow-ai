@@ -412,3 +412,14 @@ build_verbose_logs --output_filter=
 build:avx_linux --copt=-mavx
 build:avx_linux --host_copt=-mavx
 build:avx_win --copt=/arch:AVX
+
+# Windows clang-cl compiler
+build:win_clang --copt=/clang:-Weverything
+build:win_clang --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl
+build:win_clang --extra_execution_platforms=//tensorflow/tools/toolchains/win:x64_windows-clang-cl
+build:win_clang --host_platform=//tensorflow/tools/toolchains/win:x64_windows-clang-cl
+build:win_clang --compiler=clang-cl
+build:win_clang --linkopt=/FORCE:MULTIPLE
+build:win_clang --host_linkopt=/FORCE:MULTIPLE
+test:win_clang --linkopt=/FORCE:MULTIPLE
+test:win_clang --host_linkopt=/FORCE:MULTIPLE
