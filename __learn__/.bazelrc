@@ -423,3 +423,7 @@ build:win_clang --linkopt=/FORCE:MULTIPLE
 build:win_clang --host_linkopt=/FORCE:MULTIPLE
 test:win_clang --linkopt=/FORCE:MULTIPLE
 test:win_clang --host_linkopt=/FORCE:MULTIPLE
+
+# decide to build either TF 1 or 2
+# @todo - amend v2's define to default behaviour
+build:v2 --define=tf_api_version=2 --action_env=TF2_BEHAVIOR=1
