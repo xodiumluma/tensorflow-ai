@@ -372,3 +372,17 @@ build:macos --cxxopt=-std=c++17
 build:macos --host_cxxopt=-std=c++17
 build:windows --cxxopt=/std=c++17
 build:windows --host_coptcxxopt=/std=c++17
+
+# link everything into a single DLL on Windows
+build:windows --config=monolithic
+
+# dynamically link small amount of kernels on Linux
+build:linux --config=dynamic_kernels
+
+# minimise dependency on windows.h
+build:winodws --copt=-DWIN32_LEAN_AND_MEAN
+
+# Windows MSVC: standards-conformant preprocessor mode
+# https://docs.microsoft.com/en-us/cpp/preprocessor/preprocessor-experimental-overview
+build:windows --copt=/Zc:preprocessor
+build:windows --host_copt=/Zc:preprocessor
