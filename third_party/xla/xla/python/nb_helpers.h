@@ -16,13 +16,19 @@ limitations under the License.
 #ifndef XLA_PYTHON_NB_HELPERS_H_
 #define XLA_PYTHON_NB_HELPERS_H_
 
+#include <Python.h>
+
 #include "third_party/nanobind/include/nanobind/nanobind.h"
 
 namespace xla {
 
 // Calls Python hash() on an object.
 // TODO(phawkins): consider upstreaming this to nanobind.
-ssize_t nb_hash(nanobind::handle o);
+Py_hash_t nb_hash(nanobind::handle o);
+
+// Calls Python isinstance(inst, cls).
+// TODO(phawkins): consider upstreaming this to nanobind.
+bool nb_isinstance(nanobind::handle inst, nanobind::handle cls);
 
 // Variant of NB_TYPE_CASTER that doesn't define from_cpp()
 #define NB_TYPE_CASTER_FROM_PYTHON_ONLY(Value_, descr)   \
