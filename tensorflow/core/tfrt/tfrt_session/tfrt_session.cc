@@ -464,6 +464,10 @@ class TfrtSession : public tensorflow::Session {
   Status ListDevices(std::vector<DeviceAttributes>* response) override {
     return errors::Unimplemented("TfrtSession::ListDevices is Unimplemented.");
   }
+  Status LocalDeviceManager(const DeviceMgr** output) override {
+    *output = &graph_executor_->fallback_state().device_manager();
+    return absl::OkStatus();
+  }
 
  private:
   tfrt::HostContext* GetHostContext() {
@@ -603,15 +607,6 @@ class TfrtSessionFactory::ThreadPoolManager {
         const ThreadPoolOptionProto& pool_options = it.value();
         auto pool_index = it.index();
         auto num_threads = pool_options.num_threads();
-
-        // For the current use cases the first thread pool is always the default
-        // thread pool. We add this check here to verify the assumption. We can
-        // remove this check once the code stablizes, since it is semantically
-        // meaningful to use non-default thread pool as the first thread pool.
-        if (pool_index == 0 && num_threads != 0) {
-          return errors::InvalidArgument(
-              "The first thread pool must have num_threads = 0");
-        }
 
         if (num_threads != 0) {
           TF_ASSIGN_OR_RETURN(
@@ -761,7 +756,7 @@ Status TfrtSessionFactory::InitializeLocked(const TfrtSessionOptions& options) {
   mutex_.AssertHeld();
   if (options.use_tpu) {
     DCHECK(!options.backend_compiler);
-    device_target_ = TfrtDeviceInfraTarget::kBridgeFallback;
+    device_target_ = TfrtDeviceInfraTarget::kTpurt;
     tpu_use_tpu_runner_ = true;
   } else if (options.backend_compiler) {
     backend_compiler_ = options.backend_compiler;

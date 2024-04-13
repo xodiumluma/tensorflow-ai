@@ -1,10 +1,10 @@
-load("//xla:xla.bzl", "xla_cc_test")
-load("//xla/stream_executor:build_defs.bzl", "stream_executor_friends", "stream_executor_internal")
-load("@local_tsl//tsl:tsl.bzl", "internal_visibility", "transitive_hdrs")
-load("@local_tsl//tsl:tsl.default.bzl", "filegroup")
 load("@local_tsl//tsl/platform:build_config.bzl", "tf_proto_library")
 load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla:xla.bzl", "xla_cc_test")
+load("//xla/stream_executor:build_defs.bzl", "stream_executor_friends", "stream_executor_internal")
+load("//xla/tsl:tsl.bzl", "internal_visibility", "transitive_hdrs")
+load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -61,7 +61,6 @@ filegroup(
         "device_description.h",
         "device_memory.h",
         "device_memory_allocator.h",
-        "device_options.h",
         "event.h",
         "executor_cache.h",
         "host_memory_allocation.h",
@@ -204,15 +203,6 @@ cc_library(
 )
 
 cc_library(
-    name = "device_options",
-    hdrs = ["device_options.h"],
-    deps = [
-        "@com_google_absl//absl/strings",
-        "@local_tsl//tsl/platform:logging",
-    ],
-)
-
-cc_library(
     name = "host_memory_allocation",
     srcs = ["host_memory_allocation.cc"],
     hdrs = ["host_memory_allocation.h"],
@@ -272,7 +262,6 @@ cc_library(
     hdrs = ["platform.h"],
     deps = [
         ":device_description",
-        ":device_options",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
     ],
@@ -393,7 +382,8 @@ cc_library(
 cc_library(
     name = "stream_executor_headers",
     hdrs = [
-        "stream_executor_pimpl.h",  # TODO(ezhulenev): Remove internal header
+        "stream_executor_internal.h",  # TODO(301020144): Remove internal header
+        "stream_executor_pimpl.h",  # TODO(301020144): Remove internal header
         ":stream_executor_api_headers",
         ":stream_executor_plugin_headers",
     ],
@@ -478,7 +468,6 @@ cc_library(
     name = "executor_cache",
     srcs = ["executor_cache.cc"],
     hdrs = ["executor_cache.h"],
-    visibility = ["//visibility:private"],
     deps = [
         ":platform",
         ":stream_executor_headers",
@@ -510,7 +499,6 @@ cc_library(
     name = "kernel",
     srcs = ["kernel.cc"],
     hdrs = ["kernel.h"],
-    visibility = ["//visibility:private"],
     deps = [
         ":device_memory",
         ":kernel_spec",
@@ -577,6 +565,7 @@ cc_library(
         ":platform",
         ":stream_executor_headers",
         ":stream_executor_internal",
+        "//xla/tsl/util:env_var",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log",
@@ -593,7 +582,6 @@ cc_library(
         "@local_tsl//tsl/platform:stacktrace",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
-        "@local_tsl//tsl/util:env_var",
     ],
 )
 

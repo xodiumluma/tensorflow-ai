@@ -82,6 +82,7 @@ limitations under the License.
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/service/cpu/cpu_executable_run_options.h"
 #include "xla/service/cpu/cpu_xfeed.h"
+#include "xla/service/cpu/simple_orc_jit.h"
 #include "xla/service/custom_call_status.h"
 #include "xla/service/dump.h"
 #include "xla/service/executable.h"
@@ -271,7 +272,8 @@ absl::string_view TfrtCpuDeviceDescription::ToString() const {
 /*static*/ TfrtCpuTopologyDescription TfrtCpuTopologyDescription::Create(
     PjRtPlatformId platform_id, absl::string_view platform_name,
     absl::string_view platform_version,
-    absl::Span<const std::unique_ptr<TfrtCpuDevice>> devices) {
+    absl::Span<const std::unique_ptr<TfrtCpuDevice>> devices,
+    absl::Span<const std::string> machine_attributes) {
   std::vector<CpuTopology::CpuDevice> cpu_devices;
   cpu_devices.reserve(devices.size());
   for (auto& device : devices) {
@@ -279,7 +281,14 @@ absl::string_view TfrtCpuDeviceDescription::ToString() const {
         {device->id(), device->process_index(), device->local_hardware_id()});
   }
   return TfrtCpuTopologyDescription(platform_id, platform_name,
-                                    platform_version, cpu_devices);
+                                    platform_version, cpu_devices,
+                                    machine_attributes);
+}
+
+absl::StatusOr<Layout> TfrtCpuTopologyDescription::GetDefaultLayout(
+    PrimitiveType element_type, absl::Span<const int64_t> dims) const {
+  Shape shape = ShapeUtil::MakeShape(element_type, dims);
+  return LayoutUtil::GetWithDefaultLayout(shape).layout();
 }
 
 absl::StatusOr<std::string> TfrtCpuTopologyDescription::Serialize() const {
@@ -363,14 +372,23 @@ absl::StatusOr<std::unique_ptr<PjRtClient>> GetTfrtCpuClient(
       std::move(options.collectives), num_threads));
 }
 
+static tsl::ThreadOptions GetThreadOptions() {
+  tsl::ThreadOptions thread_options;
+  // On Mac OS the default stack size is 512KiB, which is too small for some
+  // BLAS and LAPACK functions (https://github.com/google/jax/issues/20428).
+  thread_options.stack_size = 2 * 1024 * 1024;
+  return thread_options;
+}
+
 TfrtCpuClient::TfrtCpuClient(
     int process_index, std::vector<std::unique_ptr<TfrtCpuDevice>> devices,
     std::shared_ptr<cpu::CollectivesInterface> collectives, size_t num_threads)
     : process_index_(process_index),
       owned_devices_(std::move(devices)),
       computation_placer_(std::make_unique<ComputationPlacer>()),
-      pjrt_client_thread_pool_(new tsl::thread::ThreadPool(
-          tsl::Env::Default(), "XLATfrtCpuClient", num_threads)),
+      pjrt_client_thread_pool_(
+          new tsl::thread::ThreadPool(tsl::Env::Default(), GetThreadOptions(),
+                                      "XLATfrtCpuClient", num_threads)),
       async_work_runner_(std::make_unique<ThreadPoolAsyncWorkRunner>(
           pjrt_client_thread_pool_.get())),
       eigen_intraop_pool_(new tsl::thread::ThreadPool(
@@ -383,7 +401,8 @@ TfrtCpuClient::TfrtCpuClient(
       transpose_cache_(1024),
       collectives_(std::move(collectives)),
       topology_(TfrtCpuTopologyDescription::Create(
-          platform_id(), platform_name(), platform_version(), owned_devices_)) {
+          platform_id(), platform_name(), platform_version(), owned_devices_,
+          cpu::DetectMachineAttributes())) {
   for (const std::unique_ptr<TfrtCpuDevice>& device : owned_devices_) {
     devices_.push_back(device.get());
     CHECK(id_to_device_.insert({device->id(), device.get()}).second)
@@ -926,15 +945,15 @@ static std::vector<tsl::RCReference<tsl::AsyncValue>> CopyAsyncValues(
   return avs;
 }
 
-PjRtFuture<absl::Status> TfrtCpuBuffer::ToLiteral(MutableLiteralBase* literal) {
+PjRtFuture<> TfrtCpuBuffer::ToLiteral(MutableLiteralBase* literal) {
   return ToLiteralHelper(literal, client()->async_work_runner());
 }
 
-PjRtFuture<absl::Status> TfrtCpuBuffer::LazyToLiteral(
+PjRtFuture<> TfrtCpuBuffer::LazyToLiteral(
     absl::AnyInvocable<absl::StatusOr<MutableLiteralBase*>() &&> generator) {
   auto buffer = std::move(generator)();
   if (!buffer.ok()) {
-    return PjRtFuture<Status>(buffer.status());
+    return PjRtFuture<>(buffer.status());
   }
   return ToLiteralHelper(buffer.value(), client()->async_work_runner());
 }
@@ -1467,18 +1486,17 @@ absl::StatusOr<PjRtLoadedExecutable::Result> TfrtCpuExecutable::ExecuteHelper(
         result_shape, std::move(tracked_device_buffer), client_, device);
     res.push_back(std::move(tfrt_output_buffer));
   }
-  std::optional<PjRtFuture<Status>> future;
+  std::optional<PjRtFuture<>> future;
   if (fill_future) {
-    auto done_event = tsl::MakeUnconstructedAsyncValueRef<Status>();
-    execute_event.AndThen(
-        [done_event = done_event.CopyRef(), event = execute_event.CopyRef()]() {
-          Status s;
-          if (auto* error = event.GetErrorIfPresent()) {
-            s = Internal("Compute error: %s", error->message());
-          }
-          done_event.emplace(std::move(s));
-        });
-    future = PjRtFuture<Status>(std::move(done_event));
+    PjRtFuture<>::Promise promise = PjRtFuture<>::CreatePromise();
+    execute_event.AndThen([promise, event = execute_event.CopyRef()]() mutable {
+      if (auto* error = event.GetErrorIfPresent()) {
+        promise.SetError(Internal("Compute error: %s", error->message()));
+      } else {
+        promise.Set();
+      }
+    });
+    future = PjRtFuture<>(std::move(promise));
   }
   return Result({/*future=*/std::move(future), /*buffers=*/std::move(res)});
 }
@@ -1521,7 +1539,7 @@ absl::StatusOr<std::vector<std::vector<std::unique_ptr<PjRtBuffer>>>>
 TfrtCpuExecutable::Execute(
     absl::Span<const std::vector<PjRtBuffer*>> argument_handles,
     const ExecuteOptions& options,
-    std::optional<std::vector<PjRtFuture<Status>>>& returned_futures) {
+    std::optional<std::vector<PjRtFuture<>>>& returned_futures) {
   tsl::profiler::TraceMe traceme("TfrtCpuExecutable::Execute");
   if (device_assignment_ == nullptr) {
     return InvalidArgument("Execute expects a non-null device_assignment");
@@ -1643,8 +1661,8 @@ TfrtCpuExecutable::Execute(
 absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 TfrtCpuExecutable::ExecuteSharded(
     absl::Span<PjRtBuffer* const> argument_handles, PjRtDevice* device,
-    const ExecuteOptions& options,
-    std::optional<PjRtFuture<Status>>& returned_future, bool fill_future) {
+    const ExecuteOptions& options, std::optional<PjRtFuture<>>& returned_future,
+    bool fill_future) {
   tsl::profiler::TraceMe traceme("TfrtCpuExecutable::ExecuteSharded");
   if (device_assignment_ == nullptr) {
     return InvalidArgument("ExecuteShard expects a non-null device_assignment");
@@ -1674,8 +1692,8 @@ TfrtCpuExecutable::ExecuteSharded(
 absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 TfrtCpuExecutable::ExecutePortable(
     absl::Span<PjRtBuffer* const> argument_handles, PjRtDevice* device,
-    const ExecuteOptions& options,
-    std::optional<PjRtFuture<Status>>& returned_future, bool fill_future) {
+    const ExecuteOptions& options, std::optional<PjRtFuture<>>& returned_future,
+    bool fill_future) {
   tsl::profiler::TraceMe traceme("TfrtCpuExecutable::ExecutePortable");
   if (device_assignment_ != nullptr) {
     return InvalidArgument("ExecutePortable gets a non-portable executable");

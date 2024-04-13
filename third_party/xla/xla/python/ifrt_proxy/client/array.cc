@@ -45,7 +45,6 @@
 #include "xla/python/ifrt_proxy/common/ifrt_service.pb.h"
 #include "xla/python/ifrt_proxy/common/types.h"
 #include "xla/python/ifrt_proxy/common/types.pb.h"
-#include "xla/python/pjrt_ifrt/pjrt_array.h"
 #include "xla/status_macros.h"
 #include "tsl/concurrency/ref_count.h"
 #include "tsl/platform/errors.h"
@@ -78,9 +77,9 @@ Array::MakeArrayFromHostBuffer(
 
   auto req = std::make_unique<MakeArrayFromHostBufferRequest>();
   req->set_host_buffer_handle(host_buffer_handle);
-  req->set_dtype(ToDTypeProto(dtype));
-  *req->mutable_shape() = ToShapeProto(shape);
-  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), ToShardingProto(*sharding));
+  *req->mutable_dtype() = dtype.ToProto();
+  *req->mutable_shape() = shape.ToProto();
+  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), sharding->ToProto());
   if (byte_strides.has_value()) {
     *req->mutable_byte_strides() = ToByteStridesProto(*byte_strides);
   }
@@ -88,7 +87,7 @@ Array::MakeArrayFromHostBuffer(
   TF_ASSIGN_OR_RETURN(
       auto response,
       rpc_helper->MakeArrayFromHostBuffer(std::move(req)).Await());
-  const ArrayHandle handle{.handle = response->array_handle()};
+  const ArrayHandle handle{response->array_handle()};
 
   if (on_done_with_host_buffer != nullptr) {
     std::move(on_done_with_host_buffer)();
@@ -168,8 +167,8 @@ Array::AssembleArrayFromSingleDeviceArrays(
     ArrayCopySemantics semantics) {
   auto req = std::make_unique<AssembleArrayFromSingleDeviceArraysRequest>();
   TF_RET_CHECK(!arrays.empty());
-  *req->mutable_shape() = ToShapeProto(shape);
-  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), ToShardingProto(*sharding));
+  *req->mutable_shape() = shape.ToProto();
+  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), sharding->ToProto());
   req->set_copy_semantics(ToArrayCopySemanticsProto(semantics));
   for (const tsl::RCReference<xla::ifrt::Array>& rcref : arrays) {
     Array* array = llvm::dyn_cast<Array>(rcref.get());
@@ -185,7 +184,7 @@ Array::AssembleArrayFromSingleDeviceArrays(
   TF_ASSIGN_OR_RETURN(
       std::shared_ptr<AssembleArrayFromSingleDeviceArraysResponse> response,
       rpc_helper->AssembleArrayFromSingleDeviceArrays(std::move(req)).Await());
-  ArrayHandle handle{.handle = response->array_handle()};
+  ArrayHandle handle{response->array_handle()};
 
   return tsl::RCReference<xla::ifrt::Array>(
       tsl::MakeRef<Array>(client, std::move(rpc_helper), arrays[0]->dtype(),
@@ -203,7 +202,7 @@ Array::DisassembleIntoSingleDeviceArrays(ArrayCopySemantics semantics) {
       rpc_helper_->DisassembleIntoSingleDeviceArrays(std::move(req)).Await());
   std::vector<ArrayHandle> handles;
   for (auto& handle : response->single_device_array_handles()) {
-    handles.push_back(ArrayHandle{.handle = handle});
+    handles.push_back(ArrayHandle{handle});
   }
 
   TF_ASSIGN_OR_RETURN(auto shape_and_shardings, sharding_->Disassemble(shape_));
@@ -232,7 +231,7 @@ absl::StatusOr<tsl::RCReference<xla::ifrt::Array>> Array::FullyReplicatedShard(
       std::shared_ptr<FullyReplicatedShardResponse> response,
       rpc_helper_->FullyReplicatedShard(std::move(req)).Await());
 
-  ArrayHandle handle{.handle = response->array_handle()};
+  ArrayHandle handle{response->array_handle()};
 
   // We are making the assumption the Array returned by the server corresponds
   // to the first device. Revisit this when IFRT supports: (1) an inexpensive
@@ -253,12 +252,12 @@ absl::StatusOr<tsl::RCReference<xla::ifrt::Array>> Array::Reshard(
     ArrayCopySemantics semantics) {
   auto req = std::make_unique<ReshardRequest>();
   req->set_array_handle(handle_.handle);
-  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), ToShardingProto(*new_sharding));
+  TF_ASSIGN_OR_RETURN(*req->mutable_sharding(), new_sharding->ToProto());
   req->set_copy_semantics(ToArrayCopySemanticsProto(semantics));
 
   TF_ASSIGN_OR_RETURN(std::shared_ptr<ReshardResponse> response,
                       rpc_helper_->Reshard(std::move(req)).Await());
-  ArrayHandle handle{.handle = response->array_handle()};
+  ArrayHandle handle{response->array_handle()};
 
   return tsl::RCReference<xla::ifrt::Array>(tsl::MakeRef<Array>(
       client_, rpc_helper_, dtype_, shape_, std::move(new_sharding), handle));

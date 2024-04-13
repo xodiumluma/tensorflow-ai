@@ -3100,7 +3100,6 @@ TEST_F(AlgebraicSimplifierTest, DoNotRemoveUnaryConcatenateWithCtrlDep) {
 
   EXPECT_THAT(computation->root_instruction(),
               GmockMatch(m::Concatenate(m::Parameter(0))));
-  LOG(ERROR) << "module: " << m->ToString();
 
   AlgebraicSimplifier simplifier(default_options_);
   ASSERT_FALSE(simplifier.Run(m.get()).value());
@@ -5663,7 +5662,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeToConcatSlice) {
 HloModule TransposeReshapeDepthToSpace
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,2,64] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,1,3,2,4}
   ROOT %reshape.2 = f32[8,28,14,64] reshape(%transpose)
@@ -5690,7 +5689,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeTooLarge) {
 HloModule TransposeReshapeDepthToSpaceBig
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,8,16] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,1,3,2,4}
   ROOT %reshape.2 = f32[8,112,14,16] reshape(%transpose)
@@ -5710,7 +5709,7 @@ TEST_F(AlgebraicSimplifierTest, TransposeReshapeNotDepthToSpace) {
 HloModule TransposeReshapeDepthToSpace
 
 ENTRY entry {
-  %param = f32[8,14,14,128]{0,1,2,3} parameter(0)
+  %param = f32[8,14,14,128] parameter(0)
   %reshape.1 = f32[8,14,14,2,64] reshape(%param)
   %transpose = transpose(%reshape.1), dimensions={0,3,1,2,4}
   ROOT %reshape.2 = f32[8,28,14,64] reshape(%transpose)
@@ -6434,6 +6433,11 @@ TEST_F(AlgebraicSimplifierTest, TransposeOfNonCanonicalBatchDotCantSimplify) {
 }
 
 TEST_F(AlgebraicSimplifierTest, DynamicSliceOfTranspose) {
+  // This test is without layouts so we have to set the verifier to be layout
+  // insensitive.
+  verifier_layout_sensitive_ = false;
+  instruction_can_change_layout_func_ = {};
+
   const char* hlo_string = R"(
     HloModule module
 
@@ -7862,6 +7866,136 @@ TEST_F(AlgebraicSimplifierTest, GatherOfScalarToBroadcast) {
   EXPECT_THAT(root, GmockMatch(m::Broadcast(m::Reshape(m::Parameter(0)))));
 }
 
+TEST_F(AlgebraicSimplifierTest, GatherOfPad) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  reshape.17992 = f32[25165824,32]{1,0} parameter(0)
+  constant.31700 = f32[] constant(0)
+  pad.921 = f32[25165824,128]{1,0} pad(reshape.17992, constant.31700), padding=0_0x0_96
+  reshape.40561 = s32[20447232,1]{1,0} parameter(1)
+  gather.100277 = f32[20447232,128]{1,0} gather(pad.921, reshape.40561),
+    offset_dims={1}, collapsed_slice_dims={0}, start_index_map={0},
+    index_vector_dim=1, slice_sizes={1,128}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  EXPECT_TRUE(simplifier.Run(module.get()).value());
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(root,
+              GmockMatch(m::Pad(m::Gather(m::Parameter(0), m::Parameter(1)),
+                                m::ConstantScalar(0))));
+}
+
+TEST_F(AlgebraicSimplifierTest, GatherOfPad2) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  iota.3 = s32[4,1]{1,0} iota(), iota_dimension=0
+  constant.36 = s32[] constant(0)
+  pad = s32[4,2]{1,0} pad(iota.3, constant.36), padding=0_0x0_1
+  reshape.300 = s32[3,40,1]{2,1,0} parameter(0)
+  gather.363 = s32[3,40,2]{2,1,0} gather(pad, reshape.300),
+    offset_dims={2}, collapsed_slice_dims={0}, start_index_map={0},
+    index_vector_dim=2, slice_sizes={1,2}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  EXPECT_TRUE(simplifier.Run(module.get()).value());
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Pad(m::Gather(m::Iota(), m::Parameter(0)),
+                                      m::ConstantScalar(0))));
+}
+
+TEST_F(AlgebraicSimplifierTest, GatherOfReshapeOfPad) {
+  const char* hlo_string = R"(
+ENTRY %entry {
+  reshape.17992 = f32[64,393216,32]{2,1,0} parameter(0)
+  constant.31700 = f32[] constant(0)
+  pad.921 = f32[64,393216,128]{2,1,0} pad(reshape.17992, constant.31700), padding=0_0x0_0x0_96
+  reshape.100261 = f32[25165824,128]{1,0} reshape(pad.921)
+  reshape.40561 = s32[20447232,1]{1,0} parameter(1)
+  gather.100277 = f32[20447232,128]{1,0} gather(reshape.100261, reshape.40561),
+    offset_dims={1}, collapsed_slice_dims={0}, start_index_map={0},
+    index_vector_dim=1, slice_sizes={1,128}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  EXPECT_TRUE(simplifier.Run(module.get()).value());
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Pad(
+                        m::Gather(m::Reshape(m::Parameter(0)), m::Parameter(1)),
+                        m::ConstantScalar(0))));
+}
+
+TEST_F(AlgebraicSimplifierTest, GatherOfReshapeOfPad2) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  iota.3 = s32[2,4,1]{2,1,0} iota(), iota_dimension=0
+  constant.36 = s32[] constant(0)
+  pad = s32[2,4,2]{2,1,0} pad(iota.3, constant.36), padding=0_0x0_0x0_1
+  reshape = s32[8,2]{1,0} reshape(pad)
+  reshape.300 = s32[3,40,1]{2,1,0} parameter(0)
+  gather.363 = s32[3,40,2]{2,1,0} gather(reshape, reshape.300),
+    offset_dims={2}, collapsed_slice_dims={0}, start_index_map={0},
+    index_vector_dim=2, slice_sizes={1,2}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  EXPECT_TRUE(simplifier.Run(module.get()).value());
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(
+      root, GmockMatch(m::Pad(m::Gather(m::Reshape(m::Iota()), m::Parameter(0)),
+                              m::ConstantScalar(0))));
+}
+
+TEST_F(AlgebraicSimplifierTest, GatherOfReshapeOfPad3) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  parameter.0 = f32[2,4256]{1,0} parameter(0)
+  constant = f32[] constant(0)
+  pad.264 = f32[2,4480]{1,0} pad(parameter.0, constant), padding=0_0x0_224
+  slice.267 = f32[2,4480]{1,0} slice(pad.264), slice={[0:2], [0:4480]}
+  reshape.269 = f32[2,28,160]{2,1,0} reshape(slice.267)
+  parameter.1 = s32[27,2]{1,0} parameter(1)
+  ROOT gather.271 = f32[2,27,2,160]{3,2,1,0} gather(reshape.269, parameter.1), offset_dims={0,3}, collapsed_slice_dims={1}, start_index_map={1}, index_vector_dim=2, slice_sizes={2,1,160}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(
+      root,
+      GmockMatch(m::Gather(
+          m::Reshape(m::Slice(m::Pad(m::Parameter(0), m::ConstantScalar(0)))),
+          m::Parameter(1))));
+}
+
 TEST_F(AlgebraicSimplifierTest, TupleReduceReshape) {
   const char* hlo_string = R"(
 HloModule module
@@ -7959,6 +8093,7 @@ TEST_F(AlgebraicSimplifierTest, DividedByConstantInstructionWithoutLayout) {
   // This test is without layouts so we have to set the verifier to be layout
   // insensitive.
   verifier_layout_sensitive_ = false;
+  instruction_can_change_layout_func_ = {};
 
   Shape shape = ShapeUtil::MakeShape(F32, {});
   shape.clear_layout();
@@ -10736,7 +10871,7 @@ TEST_F(AlgebraicSimplifierTest, SparseDotRemoveDegenerateDimensions) {
     ENTRY test {
       %lhs = f32[1,5,10,16,1] parameter(0)
       %rhs = f32[5,1,20,1,32] parameter(1)
-      %meta = u16[10,2,1] parameter(2)
+      %meta = u16[1,5,10,2,1] parameter(2)
       ROOT %dot = f32[1,5,10,20] dot(%lhs, %rhs, %meta),
           lhs_batch_dims={0,1}, rhs_batch_dims={1,0},
           lhs_contracting_dims={3,4}, rhs_contracting_dims={4,3},
@@ -10763,7 +10898,7 @@ TEST_F(AlgebraicSimplifierTest, SparseDotMoveSliceToOperands) {
     ENTRY test {
       %lhs = f32[7,12,16] parameter(0)
       %rhs = f32[7,22,32] parameter(1)
-      %meta = u16[12,2] parameter(2)
+      %meta = u16[7,12,2] parameter(2)
       %dot = f32[7,12,22] dot(%lhs, %rhs, %meta),
           lhs_batch_dims={0}, rhs_batch_dims={0},
           lhs_contracting_dims={2}, rhs_contracting_dims={2},
@@ -10811,6 +10946,36 @@ TEST_F(AlgebraicSimplifierTest, SparseDotTranspose) {
   auto descriptor = dot->sparsity().front();
   EXPECT_EQ(descriptor.index(), 1);
   EXPECT_EQ(descriptor.dimension(), 1);
+}
+
+TEST_F(AlgebraicSimplifierTest, BroadcastToTranspose) {
+  const std::string hlo_string = R"(
+  HloModule broadcast_module
+    ENTRY %main {
+      input = f32[6,4,3] parameter(0)
+      ROOT output = f32[4,3,6] broadcast(input), dimensions={2,0,1}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(hlo_string));
+  EXPECT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  HloInstruction* root = m->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Transpose(m::Parameter(0))));
+  EXPECT_EQ(root->dimensions(), std::vector<int64_t>({1, 2, 0}));
+}
+
+TEST_F(AlgebraicSimplifierTest, BroadcastToTranspose2) {
+  const std::string hlo_string = R"(
+  HloModule broadcast_module
+    ENTRY %main {
+      input = f32[6,4,3] parameter(0)
+      ROOT output = f32[4,6,3] broadcast(input), dimensions={1,0,2}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(hlo_string));
+  EXPECT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  HloInstruction* root = m->entry_computation()->root_instruction();
+  EXPECT_THAT(root, GmockMatch(m::Transpose(m::Parameter(0))));
+  EXPECT_EQ(root->dimensions(), std::vector<int64_t>({1, 0, 2}));
 }
 
 }  // namespace

@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "xla/service/gpu/fusions/loop_mlir.h"
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "xla/error_spec.h"
 #include "xla/service/gpu/fusions/mlir_emitter_test_base.h"
@@ -242,8 +243,8 @@ TEST_F(MlirLoopFusionTest, TwoUsersConsistentIndexing) {
     // CHECK-NEXT: return
 
     // CHECK: func.func private @fused_computation_atan2
-    // CHECK-NEXT: xla_gpu.pure_call
-    // CHECK-NEXT: xla_gpu.pure_call
+    // CHECK-NEXT: tensor.extract
+    // CHECK-NEXT: tensor.extract
     // CHECK-NEXT: addf
     // CHECK-NEXT: subf
     // CHECK-NEXT: mulf
