@@ -22,7 +22,7 @@ filegroup(
 
 filegroup(
   name = "objcopy",
-  srcs = glob(["bin/*.objcopy"]),
+  srcs = glob(["bin/*-objcopy"]),
 )
 
 filegroup(
@@ -37,7 +37,7 @@ filegroup(
 
 filegroup(
   name = "as",
-  srcs = glob("bin/*-as"]),
+  srcs = glob(["bin/*-as"]),
 )
 
 filegroup(
@@ -45,14 +45,23 @@ filegroup(
   srcs = glob([
     "arm-rpi-linux-gnueabihf/**",
     "libexec/**",
-    "lib/gcc/arm-rpi-linux/gnueabihf/**",
+    "lib/gcc/arm-rpi-linux-gnueabihf/**",
     "include/**",
   ]),
 )
 
-
 filegroup(
   name = "aarch64_compiler_pieces",
+  srcs = glob([
+    "aarch64-none-linux-gnu/**",
+    "libexec/**",
+    "lib/gcc/aarch64-none-linux-gnu/**",
+    "include/**",
+  ]),
+)
+
+filegroup(
+  name = "compiler_components",
   srcs = [
     ":ar",
     ":as",
