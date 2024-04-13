@@ -161,6 +161,9 @@ build:macos --apple_platform_type=macos
 # Need this to get gRPC on macOS going
 build:macos --copt=-DGRPC_BAZEL_BUILD
 
+# Prevent macOs CLI arg limit
+build:macos --features=archive_param_file
+
 # Apple Silicon macOS
 build:macos_arm64 --cpu=darwin_arm64
 build:macos_arm64 --macos_minimum_os=11.0
@@ -189,7 +192,7 @@ build:ios_fat --ios_multi_cpus=armv7,arm64,i386,x86_64
 # //tensorflow:lib_tensorflow_framework.so
 build:monolithic --define framework_shared_object=false
 build:monolithic --define tsl_protobuf_header_only=false
-build:monolithic --experimental_link_static_libraries_once=false # b/229868128
+build:monolithic --experimental_link_static_libraries_once=false  # b/229868128
 
 # MKL on macOs is not supported
 # Set the TF_MKL_ROOT before building so that you can use a local MKL rather than 
@@ -243,7 +246,7 @@ build:cuda_clang_official --action_env=CUDA_TOOLKIT_PATH="/usr/local/cuda-12.3"
 build:cuda_clang_official --action_env=GCC_HOST_COMPILER_PATH="/dt9/usr/bin/gcc"
 build:cuda_clang_official --action_env=CLANG_CUDA_COMPILER_PATH="/usr/lib/llvm-17/bin/clang"
 build:cuda_clang_official --action_env=LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
-build:cuda_clang_official --crosstool_top="@sigbuild-r2.16-clang_config_cuda//crosstool:toolchain"
+build:cuda_clang_official --crosstool_top="@sigbuild-r2.17-clang_config_cuda//crosstool:toolchain"
 
 # CUDA nvcc + host clang build
 build:nvcc_clang --config=cuda
@@ -261,11 +264,11 @@ build:dbg -c dbg
 # For a specific kernel, one can still turn on debug info:
 # --config=dbg --per_file_copt=+tensorflow/core/kernels/identity_op.*@-g
 # xla debug files are included as tensorflow keeps track of xla commits
-build:dbg --per_file_copt=+.,-tensorflow.*,-xla.*@-g0
+build:dbg --per_file_copt=+.*,-tensorflow.*,-xla.*@-g0
 build:dbg --per_file_copt=+tensorflow/core/kernels.*@-g0
 # turn off arm_neon https://github.com/tensorflow/tensorflow/issues/33360
 # AWS SDK has to tbe compiled in release mode https://github.com/tensorflow/tensorflow/issues/37498
-build:dbg --copt --DDEBUG_BUILD
+build:dbg --copt -DDEBUG_BUILD
 
 # GCP TF TPU setup
 build:tpu --define=with_tpu_support=true
@@ -279,6 +282,11 @@ build:rocm --crosstool_top=@local_config_rocm//crosstool:toolchain
 build:rocm --define=using_rocm_hipcc=true
 build:rocm --define=tensorflow_mkldnn_contraction_kernel=0
 build:rocm --repo_env TF_NEED_ROCM=1
+
+build:sycl --crosstool_top=@local_config_sycl//crosstool:toolchain
+build:sycl --define=using_sycl=true
+build:sycl --define=tensorflow_mkldnn_contraction_kernel=0
+build:sycl --repo_env TF_NEED_SYCL=1
 
 # disable unnecessary features
 build:noaws --define=no_aws_support=true
@@ -325,8 +333,8 @@ build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
 
 # for Windows MSVC `__cpluscplus` needs this switch to get it right
 # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cpluscplus/
-build:windows --copt=/Zc:__cpluscplus
-build:windows --host_copt=/Zc:__cpluscplus
+build:windows --copt=/Zc:__cplusplus
+build:windows --host_copt=/Zc:__cplusplus
 
 # If _USE_MATH_DEFINES is defined, then M_* math constants 
 # are defined by MSVC headers and can be used by TF
@@ -342,14 +350,14 @@ build:windows --features=archive_param_file
 # this project's version is on 16.11
 # https://groups.google.com/a/tensorflow.org/d/topic/build/SsW98Eo7l3o/discussion
 build:windows --copt=/d2ReducedOptimizeHugeFunctions
-build:windows --host_copt=/dReducedOptimizeHugeFunctions
+build:windows --host_copt=/d2ReducedOptimizeHugeFunctions
 
 # Turn on Windows runfiles symlink tree
 # Build pip package on Windows without intermediate data file archive
 # The current Aug 2023 build_pip_package uses runfiles symlink tree
 # to decide what to put into Python wheel
 startup --windows_enable_symlinks
-build:winodws --enable_runfiles
+build:windows --enable_runfiles
 
 # default paths for TF_SYSTEM_LIBS (not for WINDOWS)
 build:linux --define=PREFIX=/usr
@@ -360,6 +368,7 @@ build:macos --define=PREFIX=/usr
 build:macos --define=LIBDIR=$(PREFIX)/lib
 build:macos --define=INCLUDEDIR=$(PREFIX)/include
 build:macos --define=PROTOBUF_INCLUDE_PATH=$(PREFIX)/include
+# Windows does not support TF_SYSTEM_LIBS
 
 # build TF in C++ 17 mode by default
 build:android --cxxopt=-std=c++17
@@ -370,8 +379,8 @@ build:linux --cxxopt=-std=c++17
 build:linux --host_cxxopt=-std=c++17
 build:macos --cxxopt=-std=c++17
 build:macos --host_cxxopt=-std=c++17
-build:windows --cxxopt=/std=c++17
-build:windows --host_coptcxxopt=/std=c++17
+build:windows --cxxopt=/std:c++17
+build:windows --host_coptcxxopt=/std:c++17
 
 # link everything into a single DLL on Windows
 build:windows --config=monolithic
@@ -380,7 +389,10 @@ build:windows --config=monolithic
 build:linux --config=dynamic_kernels
 
 # minimise dependency on windows.h
-build:winodws --copt=-DWIN32_LEAN_AND_MEAN
+build:windows --copt=-DWIN32_LEAN_AND_MEAN
+build:windows --host_copt=-DWIN32_LEAN_AND_MEAN
+build:windows --copt=-DNOGDI
+build:windows --host_copt=-DNOGDI
 
 # Windows MSVC: standards-conformant preprocessor mode
 # https://docs.microsoft.com/en-us/cpp/preprocessor/preprocessor-experimental-overview
@@ -398,13 +410,17 @@ build:windows --host_linkopt=/OPT:ICF
 # be very verbose when problems crop up
 build:windows --verbose_failures
 
+# When facing large CLI strings on Windows we have this workaround
+# https://github.com/bazelbuild/bazel/issues/5163
+build:windows --features=compiler_param_file
+
 # avoid cache corruption
 # https://github.com/bazelbuild/bazel/issues/3360
 build:linux --experimental_guard_against_concurrent_changes
 
 # set up logs based on length
 build:short_logs --output_filter=DONT_MATCH_ANYTHING
-build_verbose_logs --output_filter=
+build:verbose_logs --output_filter=
 
 # Optimise instruction sets
 # @todo: we need a feature in toolchains for avx/avx2
