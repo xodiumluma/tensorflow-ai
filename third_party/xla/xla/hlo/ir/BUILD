@@ -1,8 +1,8 @@
 # Description:
 #   XLA’s HLO Intermediate Representation implementation.
 
-load("@local_tsl//tsl:tsl.bzl", "internal_visibility")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("//xla/tsl:tsl.bzl", "internal_visibility")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -131,6 +131,17 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "hlo_dfs_reachability",
+    srcs = ["hlo_dfs_reachability.cc"],
+    hdrs = ["hlo_dfs_reachability.h"],
+    deps = [
+        ":hlo",
+        "@com_google_absl//absl/algorithm:container",
+        "@llvm-project//llvm:Support",
     ],
 )
 
