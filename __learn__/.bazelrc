@@ -380,7 +380,7 @@ build:linux --host_cxxopt=-std=c++17
 build:macos --cxxopt=-std=c++17
 build:macos --host_cxxopt=-std=c++17
 build:windows --cxxopt=/std:c++17
-build:windows --host_coptcxxopt=/std:c++17
+build:windows --host_cxxopt=/std:c++17
 
 # link everything into a single DLL on Windows
 build:windows --config=monolithic
@@ -461,3 +461,18 @@ build:resultstore --bes_backend=buildeventservice.googleapis.com
 build:resultstore --bes_instance_name="tensorflow-testing"
 build:resultstore --bes_results_url="https://source.cloud.google.com/results/invocations"
 build:resultstore --bes_timeout=600s
+
+# Turn on remote config witht his flag
+common --experimental_repo_remote_exec
+
+# Don't attempt to query host system for a C++ toolchain
+build:rbe_base --config=resultstore
+build:rbe_base --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+build:rbe_base --define=EXECUTOR=remote
+build:rbe_base --jobs=800
+build:rbe_base --remote_executor=grpcs://remotebuildexecution.googleapis.com
+build:rbe_base --remote_timeout=3600
+build:rbe_base --spawn_strategy=remote,worker,standalone,local
+# Reduce chattiness between bazel and remote workers
+build:rbe_base --remote_download_toplevel
+test:rbe_base --test_env=USER=anon
