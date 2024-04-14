@@ -476,3 +476,7 @@ build:rbe_base --spawn_strategy=remote,worker,standalone,local
 # Reduce chattiness between bazel and remote workers
 build:rbe_base --remote_download_toplevel
 test:rbe_base --test_env=USER=anon
+
+# @TODO(kanglan): make decision on merging rbe_linux into rbe_linux_cpu
+build:rbe_linux --config=rbe_base
+build:rbe_linux --action_env=PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin"
