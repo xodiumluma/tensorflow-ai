@@ -496,4 +496,5 @@ build:rbe_linux_cpu --extra_toolchains="@sigbuild-r2.17-clang_config_cuda//crost
 build:rbe_linux_cpu --extra_execution_platforms="@sigbuild-r2.17-clang_config_platform//:platform"
 build:rbe_linux_cpu --host_platform="@sigbuild-r2.17-clang_config_platform//:platform"
 build:rbe_linux_cpu --platforms="@sigbuild-r2.17-clang_config_platform://platform"
-
+# While this is required for Clang17 builds we cannot allow it for GCC builds
+build:rbe_linux_cpu --copt=-Wno-error=unused-command-line-argument 
