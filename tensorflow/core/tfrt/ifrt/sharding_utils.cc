@@ -616,7 +616,7 @@ absl::StatusOr<tensorflow::Tensor> MakeTensorFromArray(
             b.index_domain.origin().elements().end());
       });
 
-  std::vector<xla::ifrt::Future<absl::Status>> arrays_copy_status;
+  std::vector<xla::ifrt::Future<>> arrays_copy_status;
   std::vector<tensorflow::Tensor> input_tensors;
   input_tensors.reserve(index_domain_device_arrays.size());
   arrays_copy_status.reserve(index_domain_device_arrays.size());
@@ -626,7 +626,7 @@ absl::StatusOr<tensorflow::Tensor> MakeTensorFromArray(
                         ToTensorDataType(array->dtype()));
     tensorflow::Tensor tensor(dtype, tensor_shape);
     input_tensors.push_back(tensor);
-    xla::ifrt::Future<absl::Status> copy_status =
+    xla::ifrt::Future<> copy_status =
         array->CopyToHostBuffer(tensor.data(), /*byte_strides=*/{},
                                 xla::ifrt::ArrayCopySemantics::kAlwaysCopy);
     copy_status.OnReady([tensor](absl::Status status) {
@@ -673,7 +673,8 @@ absl::StatusOr<tsl::RCReference<xla::ifrt::Array>> MakeArrayFromTensor(
     VLOG(1) << "Single device fast path for Maximal tiled tensor";
     xla::ifrt::Device* device;
     int unique_device_id = hlo_sharding.GetUniqueDevice();
-    TF_ASSIGN_OR_RETURN(device, ifrt_client.LookupDevice(unique_device_id));
+    TF_ASSIGN_OR_RETURN(device, ifrt_client.LookupDevice(
+                                    xla::ifrt::DeviceId(unique_device_id)));
     return CreateArrayFromHostTensorForSingleDevice(ifrt_client, input_tensor,
                                                     device);
   }
@@ -693,8 +694,9 @@ absl::StatusOr<tsl::RCReference<xla::ifrt::Array>> MakeArrayFromTensor(
   std::vector<xla::ifrt::Device*> devices;
   devices.reserve(device_ids.size());
   for (auto device_id : device_ids) {
-    TF_ASSIGN_OR_RETURN(xla::ifrt::Device * device,
-                        ifrt_client.LookupDevice(device_id));
+    TF_ASSIGN_OR_RETURN(
+        xla::ifrt::Device * device,
+        ifrt_client.LookupDevice(xla::ifrt::DeviceId(device_id)));
     devices.push_back(device);
   }
   xla::ifrt::DeviceList device_list(

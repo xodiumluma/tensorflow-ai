@@ -42,6 +42,7 @@ typedef enum {
   PJRT_Extension_Type_Gpu_Custom_Call = 0,
   PJRT_Extension_Type_Profiler,
   PJRT_Extension_Type_Custom_Partitioner,
+  PJRT_Extension_Type_Stream,
 } PJRT_Extension_Type;
 
 // PJRT_Extension_Base contains a type and a pointer to next
@@ -76,7 +77,7 @@ PJRT_DEFINE_STRUCT_TRAITS(PJRT_Extension_Base, next);
 // Changes include:
 // * Adding a new field to the PJRT_Api or argument structs
 // * Renaming a method or argument (doesn't affect ABI)
-#define PJRT_API_MINOR 48
+#define PJRT_API_MINOR 49
 
 // The plugin should set the major_version and minor_version of
 // PJRT_Api.pjrt_api_version to be the `PJRT_API_MAJOR` and `PJRT_API_MINOR` in
@@ -659,6 +660,17 @@ typedef enum {
   // buffer may be freed, the runtime will call `done_with_host_buffer` when the
   // PjRtBuffer is freed.
   PJRT_HostBufferSemantics_kImmutableZeroCopy,
+
+  // The PjRtBuffer may alias `data` internally and the runtime may use the
+  // `data` contents as long as the buffer is alive. The runtime is allowed
+  // to mutate contents of the buffer (i.e. use it for aliased output
+  // buffers). The caller promises to keep `data` alive and not to mutate its
+  // contents as long as the buffer is alive (otherwise it could be a data
+  // race with the runtime); to notify the caller that the buffer may be
+  // freed, the runtime will call `on_done_with_host_buffer` when the
+  // PjRtBuffer is freed. On non-CPU platforms this acts identically to
+  // kImmutableUntilTransferCompletes.
+  PJRT_HostBufferSemantics_kMutableZeroCopy,
 } PJRT_HostBufferSemantics;
 
 typedef enum {

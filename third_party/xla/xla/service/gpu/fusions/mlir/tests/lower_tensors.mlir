@@ -1,6 +1,6 @@
 // RUN: mlir_fusions_opt %s -split-input-file -xla-gpu-lower-tensors | FileCheck %s
 
-module {
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 32 : i32>>} {
   func.func private @add(%arg0: f32, %arg1: f32) -> f32 {
     %sum = arith.addf %arg0, %arg1 : f32
     func.return %sum : f32
@@ -72,7 +72,7 @@ module {
 // CHECK:      @layout(%[[ARG0:.*]]: !llvm.ptr,
 // CHECK-SAME:     %[[X:.*]]: index, %[[Y:.*]]: index
 // CHECK:        %[[IDX:.*]] = affine.apply #[[MAP]](%[[X]], %[[Y]])
-// CHECK:        %[[IDX_CAST:.*]] = arith.index_castui %[[IDX]] : index to i32
+// CHECK:        %[[IDX_CAST:.*]] = arith.index_castui %[[IDX]] : index to i64
 // CHECK:        %[[PTR:.*]] = llvm.getelementptr inbounds %[[ARG0]][%[[IDX_CAST]]]
 // CHECK:        llvm.load %[[PTR]]
 
@@ -110,7 +110,7 @@ module {
 // CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // CHECK-DAG:   %[[C2:.*]] = arith.constant 2 : index
 // CHECK:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
-// CHECK:         %[[CAST:.*]] = arith.index_castui %[[I]] : index to i32
+// CHECK:         %[[CAST:.*]] = arith.index_castui %[[I]] : index to i64
 // CHECK:         %[[PTR:.*]] = llvm.getelementptr inbounds %[[ARG0]][%[[CAST]]]
 // CHECK:         llvm.store {{.*}}, %[[PTR]]
 // CHECK:       %[[INBOUNDS:.*]] = arith.cmpi
@@ -132,6 +132,27 @@ module {
 
 // CHECK: @large_tensor
 // CHECK: arith.index_castui {{.*}} : index to i64
+
+// -----
+
+module {
+  func.func @extract_from_constant(%arg0: tensor<2x1xf32>,
+      %arg1: index, %arg2: index) -> f32 {
+    %cst = arith.constant dense<[[1.000000e+00], [2.000000e+00]]> : tensor<2x1xf32>
+    %extracted = tensor.extract %arg0[%arg1, %arg2] : tensor<2x1xf32>
+    %extracted_0 = tensor.extract %cst[%arg1, %arg2] : tensor<2x1xf32>
+    %0 = arith.addf %extracted, %extracted_0 : f32
+    return %0 : f32
+  }
+}
+// CHECK: llvm.mlir.global private constant @global_cst_0(dense<[
+// CHECK-SAME: [1.000000e+00], [2.000000e+00]]> : tensor<2x1xf32>) {addr_space = 0 : i32} : !llvm.array<2 x f32>
+// CHECK: @extract_from_constant
+// CHECK: %[[ADDR_OF:.*]] = llvm.mlir.addressof @global_cst_0 : !llvm.ptr
+// CHECK: %[[GEP:.*]] = llvm.getelementptr inbounds %[[ADDR_OF]][%{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+// CHECK: %[[LOAD:.*]] = llvm.load %[[GEP]] : !llvm.ptr -> f32
+// CHECK: %[[ADD:.*]] = arith.addf %{{.*}}, %[[LOAD]] : f32
+// CHECK: return %[[ADD]] : f32
 
 // -----
 
@@ -309,3 +330,34 @@ module {
 // CHECK-NEXT: %[[RES_SHIFT:.*]] = llvm.shl %[[RES_WIDE]], %{{.*}}
 // CHECK-NEXT: %[[NEW:.*]] = llvm.or %[[NEW_MASKED]], %[[RES_SHIFT]]
 // CHECK-NEXT: llvm.cmpxchg %[[BASE]], %[[VAR]], %[[NEW]]
+
+// -----
+
+module {
+  func.func @shared_complex() -> tensor<10xcomplex<f32>> {
+    %shared = xla_gpu.allocate_shared : tensor<10xcomplex<f32>>
+    return %shared : tensor<10xcomplex<f32>>
+  }
+}
+
+// CHECK: llvm.mlir.global private @{{.*}}() {addr_space = 3 : i32} : !llvm.array<10 x struct<(f32, f32)>>
+// CHECK: @shared_complex
+
+// -----
+
+module {
+  func.func @i4_load_store(%arg: tensor<10xi4>, %i: index, %j: index) -> tensor<10xi4> {
+    %v = tensor.extract %arg[%i] : tensor<10xi4>
+    %r = tensor.insert %v into %arg[%j] : tensor<10xi4>
+    return %r : tensor<10xi4>
+  }
+}
+
+// CHECK: @i4_load_store
+// CHECK: llvm.getelementptr
+// CHECK-SAME: -> !llvm.ptr, i8
+// CHECK: llvm.load
+// CHECK: llvm.getelementptr
+// CHECK-SAME: -> !llvm.ptr, i8
+// CHECK: llvm.load
+// CHECK: llvm.store

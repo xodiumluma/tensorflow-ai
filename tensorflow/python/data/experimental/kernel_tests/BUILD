@@ -243,9 +243,8 @@ tf_py_strict_test(
 tf_py_strict_test(
     name = "index_flat_map_test",
     srcs = ["index_flat_map_test.py"],
-    shard_count = 4,
+    shard_count = 8,
     deps = [
-        "//tensorflow/python/data/experimental/ops:cardinality",
         "//tensorflow/python/data/experimental/ops:global_shuffle_op",
         "//tensorflow/python/data/experimental/ops:index_flat_map_op",
         "//tensorflow/python/data/kernel_tests:checkpoint_test_base",
