@@ -53,9 +53,10 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
   using StatusOr = ::absl::StatusOr<T>;
   using StatusCallback = std::function<void(const absl::Status&)>;
 
-  explicit TpuExecutor(::tensorflow::tpu::TpuPlatformInterface* platform,
-                       SE_StreamExecutor* executor, int device_ordinal)
-      : platform_(platform),
+  TpuExecutor(::tensorflow::tpu::TpuPlatformInterface* platform,
+              SE_StreamExecutor* executor, int device_ordinal)
+      : TpuExecutorInterface(platform),
+        platform_(platform),
         executor_(executor),
         device_ordinal_(device_ordinal) {}
 
@@ -124,9 +125,6 @@ class TpuExecutor : public tensorflow::tpu::TpuExecutorInterface {
   absl::Status SynchronousMemcpy(void* host_dst,
                                  const DeviceMemoryBase& device_src,
                                  uint64_t size) override;
-  absl::Status SynchronousMemcpyDeviceToDevice(
-      DeviceMemoryBase* device_dst, const DeviceMemoryBase& device_src,
-      uint64_t size) override;
 
   Event::Status PollForEventStatus(Event* event) override;
   absl::Status RecordEvent(Stream* stream, Event* event) override;

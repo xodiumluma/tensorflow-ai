@@ -251,16 +251,13 @@ BackendInterface::Response IfrtBackend::HandleInit(
 
   for (auto* device : client_->devices()) {
     InitResponse::Device* d = init_resp->add_devices();
-    d->set_id(device->id());
-    d->set_local_device_id(device->local_device_id().value());
-    d->set_local_hardware_id(device->local_hardware_id_typed().value());
-    d->set_device_kind(AsProtoStringData(device->device_kind()));
-    if (auto default_memory_space = device->default_memory_space();
-        default_memory_space.ok()) {
-      d->set_default_memory_id((*default_memory_space)->id());
+    d->set_id(device->Id().value());
+    d->set_device_kind(AsProtoStringData(device->Kind()));
+    if (auto default_memory = device->DefaultMemory(); default_memory.ok()) {
+      d->set_default_memory_id((*default_memory)->Id().value());
     }
-    for (const auto* memory : device->memory_spaces()) {
-      d->add_memory_ids(memory->id());
+    for (const auto* memory : device->Memories()) {
+      d->add_memory_ids(memory->Id().value());
     }
     d->set_debug_string(AsProtoStringData(device->DebugString()));
     d->set_to_string(AsProtoStringData(device->ToString()));
@@ -270,13 +267,14 @@ BackendInterface::Response IfrtBackend::HandleInit(
     }
   }
   for (auto* addressable_device : client_->addressable_devices()) {
-    init_resp->add_addressable_device_ids(addressable_device->id());
+    init_resp->add_addressable_device_ids(addressable_device->Id().value());
   }
 
   absl::flat_hash_map<int, xla::ifrt::Memory*> memories;
   for (auto* device : client_->devices()) {
-    for (xla::ifrt::Memory* memory : device->memory_spaces()) {
-      const auto [it, inserted] = memories.insert({memory->id(), memory});
+    for (xla::ifrt::Memory* memory : device->Memories()) {
+      const auto [it, inserted] =
+          memories.insert({memory->Id().value(), memory});
       if (!inserted && it->second != memory) {
         return absl::FailedPreconditionError(absl::StrCat(
             "Two memories cannot have the same id: ", memory->ToString(),
@@ -287,10 +285,9 @@ BackendInterface::Response IfrtBackend::HandleInit(
   for (const auto& [id, memory] : memories) {
     auto* m = init_resp->add_memories();
     m->set_id(id);
-    m->set_memory_space_kind(AsProtoStringData(memory->kind()));
-    m->set_kind_id(memory->kind_id());
-    for (const auto* device : memory->devices()) {
-      m->add_device_ids(device->id());
+    m->set_memory_space_kind(AsProtoStringData(*memory->Kind().memory_kind()));
+    for (const auto* device : memory->Devices()) {
+      m->add_device_ids(device->Id().value());
     }
     m->set_debug_string(AsProtoStringData(memory->DebugString()));
     m->set_to_string(AsProtoStringData(memory->ToString()));
@@ -473,7 +470,7 @@ Future<BackendInterface::Response> IfrtBackend::HandleCopyToHostBufferRequest(
   }
 
   // TODO(b/282757875): Consider other ArrayCopySemantics.
-  Future<absl::Status> copy_status =
+  Future<> copy_status =
       (*array)->CopyToHostBuffer(mem_region->zeroth_element(), byte_strides,
                                  ArrayCopySemantics::kAlwaysCopy);
 
@@ -631,7 +628,8 @@ BackendInterface::Response IfrtBackend::HandleDeleteArrayRequest(
   uint64_t future_handle = handle_generator_.New();
   {
     absl::MutexLock lock(&futures_mutex_);
-    futures_.insert({future_handle, std::move(deletion_future)});
+    futures_.insert(
+        {future_handle, std::move(deletion_future).ToStatusFuture()});
   }
 
   auto ifrt_resp = NewIfrtResponse(request->request_metadata().op_id());
@@ -747,7 +745,7 @@ Future<BackendInterface::Response> IfrtBackend::HandleCompileRequest(
       proto->set_partition(logical_device_id.partition);
     }
     for (const auto* device : executable->addressable_devices()) {
-      compile_resp->add_addressable_device_ids(device->id());
+      compile_resp->add_addressable_device_ids(device->Id().value());
     }
     // TODO(b/282757875): Consider making fingerprint calculation asynchronous
     // if it is expected to take long.
@@ -895,7 +893,8 @@ BackendInterface::Response IfrtBackend::HandleLoadedExecutableExecuteRequest(
     DeviceList::Devices d;
     d.reserve(execute.device_ids_size());
     for (const int32_t device_id : execute.device_ids()) {
-      TF_ASSIGN_OR_RETURN(d.emplace_back(), client_->LookupDevice(device_id));
+      TF_ASSIGN_OR_RETURN(d.emplace_back(),
+                          client_->LookupDevice(DeviceId(device_id)));
     }
     devices = DeviceList(std::move(d));
   }
@@ -915,8 +914,8 @@ BackendInterface::Response IfrtBackend::HandleLoadedExecutableExecuteRequest(
   {
     absl::MutexLock lock(&futures_mutex_);
     execute_response->set_status_handle(handle_generator_.New());
-    futures_.insert(
-        {execute_response->status_handle(), std::move(result.status)});
+    futures_.insert({execute_response->status_handle(),
+                     std::move(result.status).ToStatusFuture()});
   }
 
   // Register output arrays. At this point, we should never early return because

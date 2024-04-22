@@ -422,7 +422,7 @@ LoadedExecutable::Execute(absl::Span<tsl::RCReference<xla::ifrt::Array>> args,
   TF_ASSIGN_OR_RETURN(*req->mutable_execute_options(), options.ToProto());
   if (devices.has_value()) {
     for (const auto* device : *devices) {
-      req->add_device_ids(device->id());
+      req->add_device_ids(device->Id().value());
     }
   }
 
@@ -437,7 +437,8 @@ LoadedExecutable::Execute(absl::Span<tsl::RCReference<xla::ifrt::Array>> args,
 
   // Populate the execution status future. `CheckFuture` deletes the server-side
   // futures after its completion.
-  result.status = rpc_helper_->CheckFuture(response->status_handle());
+  result.status = Future<>::FromStatusFuture(
+      rpc_helper_->CheckFuture(response->status_handle()));
 
   // Create output arrays. The cleanup logic ensures that all handles are
   // properly cleaned up on early return.

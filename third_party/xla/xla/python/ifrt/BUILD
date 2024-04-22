@@ -35,6 +35,7 @@ exports_files([
 cc_library(
     name = "ifrt",
     srcs = [
+        "array_spec.cc",
         "array.cc",
         "client.cc",
         "compiler.cc",
@@ -56,6 +57,7 @@ cc_library(
     ],
     hdrs = [
         "array.h",
+        "array_spec.h",
         "client.h",
         "compiler.h",
         "device.h",
@@ -76,6 +78,7 @@ cc_library(
     ],
     compatible_with = get_compatible_with_portable(),
     deps = [
+        ":array_spec_proto_cc",
         ":device_proto_cc",
         ":dtype_proto_cc",
         ":serdes",
@@ -87,7 +90,9 @@ cc_library(
         "//xla/hlo/ir:hlo",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt:pjrt_common",
+        "//xla/pjrt:pjrt_device_description",
         "//xla/pjrt:pjrt_executable",
+        "//xla/pjrt:pjrt_future",
         "//xla/pjrt:pjrt_layout",
         "//xla/python/ifrt/ir",
         "@com_google_absl//absl/algorithm:container",
@@ -97,6 +102,7 @@ cc_library(
         "@com_google_absl//absl/container:node_hash_set",
         "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/hash",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -106,6 +112,7 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
         "@local_tsl//tsl/concurrency:ref_count",
+        "@local_tsl//tsl/lib/gtl:int_type",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:statusor",
@@ -130,6 +137,7 @@ xla_cc_test(
     srcs = ["future_test.cc"],
     deps = [
         ":ifrt",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/lib/core:status_test_util",
@@ -420,6 +428,32 @@ xla_cc_test(
 )
 
 tf_proto_library(
+    name = "array_spec_proto",
+    srcs = ["array_spec.proto"],
+    protodeps = [
+        ":dtype_proto",
+        ":shape_proto",
+        ":sharding_proto",
+    ],
+)
+
+xla_cc_test(
+    name = "array_spec_test",
+    size = "small",
+    srcs = ["array_spec_test.cc"],
+    deps = [
+        ":array_spec_proto_cc",
+        ":ifrt",
+        ":sharding_serdes",
+        ":sharding_test_util",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Support",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+tf_proto_library(
     name = "device_proto",
     srcs = ["device.proto"],
 )
@@ -517,5 +551,68 @@ xla_cc_test(
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/protobuf:error_codes_proto_impl_cc",
         "@local_tsl//tsl/protobuf:status_proto_cc",
+    ],
+)
+
+cc_library(
+    name = "io_callable_program",
+    srcs = ["io_callable_program.cc"],
+    hdrs = ["io_callable_program.h"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        ":ifrt",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+tf_proto_library(
+    name = "io_callable_program_proto",
+    srcs = ["io_callable_program.proto"],
+    protodeps = [
+        ":array_spec_proto",
+        ":device_proto",
+    ],
+)
+
+cc_library(
+    name = "io_callable_program_serdes",
+    srcs = ["io_callable_program_serdes.cc"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        ":array_spec_proto_cc",
+        ":ifrt",
+        ":io_callable_program",
+        ":io_callable_program_proto_cc",
+        ":program_serdes",
+        ":serdes",
+        ":sharding_proto_cc",
+        ":sharding_serdes",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@llvm-project//llvm:Support",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+    alwayslink = True,
+)
+
+xla_cc_test(
+    name = "io_callable_program_serdes_test",
+    srcs = ["io_callable_program_serdes_test.cc"],
+    deps = [
+        ":ifrt",
+        ":io_callable_program",
+        ":io_callable_program_serdes",
+        ":program_serdes",
+        ":serdes",
+        ":sharding_test_util",
+        "@com_google_absl//absl/functional:bind_front",
+        "@com_google_absl//absl/status",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Support",
+        "@local_tsl//tsl/lib/core:status_test_util",
+        "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:test",
     ],
 )

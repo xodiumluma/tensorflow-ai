@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/compiler/mlir/quantization/stablehlo/cc/report.h"
 
+#include <string>
 #include <utility>
 
 #include <gmock/gmock.h>
@@ -23,6 +24,7 @@ limitations under the License.
 #include "mlir/IR/OwningOpRef.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/quantization/common/test_base.h"
 #include "tensorflow/compiler/mlir/quantization/stablehlo/quantization_config.pb.h"
+#include "tsl/platform/protobuf.h"  // IWYU pragma: keep
 
 namespace mlir::quant::stablehlo {
 namespace {
@@ -34,6 +36,7 @@ using ::stablehlo::quantization::QuantizationResults;
 using ::testing::IsEmpty;
 using ::testing::SizeIs;
 using ::testing::StrEq;
+using ::tsl::protobuf::TextFormat;
 
 using QuantizationReportTest = ::mlir::quant::QuantizationTestBase;
 
@@ -71,7 +74,7 @@ TEST_F(QuantizationReportTest, InitializeWithModuleOp) {
     func.func @main(%arg0: tensor<1x2xf32>) -> tensor<1x3xf32> {
       %0 = stablehlo.constant() {value = dense<127> : tensor<2x3xi8>} : () -> tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>
       %1 = stablehlo.uniform_quantize %arg0 : (tensor<1x2xf32>) -> tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>
-      %2 = call @quantized_dot_general_fn(%1, %0) : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      %2 = call @quantized_dot_general_fn(%1, %0) {_quantization_method = "static_range_ptq { }"} : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
       %3 = stablehlo.uniform_dequantize %2 : (tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>) -> tensor<1x3xf32>
       return %3 : tensor<1x3xf32>
     }
@@ -93,11 +96,73 @@ TEST_F(QuantizationReportTest, InitializeWithModuleOp) {
 
   // Test that the quantized `QuantizableUnit` corresponding to
   // `composite_dot_general_fn` is captured.
-  // TODO: Transfer the `Method` used to quantize the op.
   const QuantizationResult& result = results.results(0);
   EXPECT_THAT(result.quantizable_unit().name(),
               StrEq("composite_dot_general_fn"));
-  EXPECT_FALSE(result.has_method());
+  EXPECT_TRUE(result.method().has_static_range_ptq());
+}
+
+TEST_F(QuantizationReportTest,
+       InitializeWithModuleOpWithoutQuantizationMethodAttribute) {
+  // A quantized dot_general op but the `CallOp` is missing the
+  // `_quantization_method` attribute.
+  constexpr absl::string_view
+      kQuantizedDotGeneralMissingQuantizationMethodAttr = R"mlir(
+    func.func @main(%arg0: tensor<1x2xf32>) -> tensor<1x3xf32> {
+      %0 = stablehlo.constant() {value = dense<127> : tensor<2x3xi8>} : () -> tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>
+      %1 = stablehlo.uniform_quantize %arg0 : (tensor<1x2xf32>) -> tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>
+      %2 = call @quantized_dot_general_fn(%1, %0) : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      %3 = stablehlo.uniform_dequantize %2 : (tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>) -> tensor<1x3xf32>
+      return %3 : tensor<1x3xf32>
+    }
+
+    func.func private @quantized_dot_general_fn(%arg0: tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, %arg1: tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>> {
+      %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i32:f32:1, {6.000000e+0,7.000000e+0,8.000000e+0}>>
+      %1 = stablehlo.uniform_quantize %0 : (tensor<1x3x!quant.uniform<i32:f32:1, {6.000000e+0,7.000000e+0,8.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      return %1 : tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+    }
+  )mlir";
+
+  const OwningOpRef<ModuleOp> module_op =
+      ParseModuleOpString(kQuantizedDotGeneralMissingQuantizationMethodAttr);
+  ASSERT_TRUE(module_op);
+
+  const QuantizationReport report(*module_op);
+  const QuantizationResults& results = report.GetQuantizationResults();
+  // The quantized call op without the _quantization_method attribute is not
+  // captured as a `QuantizationResult`.
+  ASSERT_THAT(results.results(), IsEmpty());
+}
+
+TEST_F(QuantizationReportTest, InitializeWithModuleOpWithInvalidCalleeName) {
+  // A quantized dot_general op but the callee function has an invalid name. It
+  // is expected to start with `quantized_`.
+  constexpr absl::string_view kQuantizedDotGeneralWithInvalidCalleeName =
+      R"mlir(
+    func.func @main(%arg0: tensor<1x2xf32>) -> tensor<1x3xf32> {
+      %0 = stablehlo.constant() {value = dense<127> : tensor<2x3xi8>} : () -> tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>
+      %1 = stablehlo.uniform_quantize %arg0 : (tensor<1x2xf32>) -> tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>
+      %2 = call @invalid_quantized_dot_general_fn(%1, %0) {_quantization_method = "static_range_ptq { }"} : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      %3 = stablehlo.uniform_dequantize %2 : (tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>) -> tensor<1x3xf32>
+      return %3 : tensor<1x3xf32>
+    }
+
+    func.func private @invalid_quantized_dot_general_fn(%arg0: tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, %arg1: tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>> {
+      %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i32:f32:1, {6.000000e+0,7.000000e+0,8.000000e+0}>>
+      %1 = stablehlo.uniform_quantize %0 : (tensor<1x3x!quant.uniform<i32:f32:1, {6.000000e+0,7.000000e+0,8.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      return %1 : tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+    }
+  )mlir";
+
+  const OwningOpRef<ModuleOp> module_op =
+      ParseModuleOpString(kQuantizedDotGeneralWithInvalidCalleeName);
+  ASSERT_TRUE(module_op);
+
+  const QuantizationReport report(*module_op);
+  const QuantizationResults& results = report.GetQuantizationResults();
+  // The quantized call op whose callee doesn't start with `quantized_` is not
+  // captured as a `QuantizationResult`.
+  ASSERT_THAT(results.results(), IsEmpty());
 }
 
 TEST_F(QuantizationReportTest, InitializeWithModuleOpWithNonQuantizedOp) {
@@ -138,11 +203,11 @@ TEST_F(QuantizationReportTest,
     func.func @main(%arg0: tensor<1x2xf32>, %arg1: tensor<1x2xf32>) -> tensor<1x3xf32> {
       // Non-quantized dot_general.
       %0 = stablehlo.constant dense<3.000000e+0> : tensor<2x3xf32>
-      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn_1, _original_entry_function = "composite_dot_general_fn_1", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable",   device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
+      %1 = "tf.XlaCallModule"(%arg0, %0) {Sout = [#tf_type.shape<1x3>], _entry_function = @composite_dot_general_fn_1, _original_entry_function = "composite_dot_general_fn_1", _stablehlo_module_attrs = {}, _tfl_quant_trait = "fully_quantizable", device = "", dim_args_spec = [], disabled_checks = [], has_token_input_output = false, module = "", platforms = [], version = 5 : i64} : (tensor<1x2xf32>, tensor<2x3xf32>) -> tensor<1x3xf32>
       // Quantized dot_general.
       %2 = stablehlo.constant() {value = dense<127> : tensor<2x3xi8>} : () -> tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>
       %3 = stablehlo.uniform_quantize %arg1 : (tensor<1x2xf32>) -> tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>
-      %4 = call @quantized_dot_general_fn_2(%3, %2) : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
+      %4 = call @quantized_dot_general_fn_2(%3, %2) {_quantization_method = "static_range_ptq { }"} : (tensor<1x2x!quant.uniform<i8:f32, 4.000000e+0>>, tensor<2x3x!quant.uniform<i8<-127:127>:f32:1, {1.000000e+0,2.000000e+0,3.000000e+0}>>) -> tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>
       %5 = stablehlo.uniform_dequantize %4 : (tensor<1x3x!quant.uniform<i8:f32, 5.000000e+0>>) -> tensor<1x3xf32>
       // Add is there to prevent from dot_generals from being DCEed.
       %6 = stablehlo.add %1, %5 : tensor<1x3xf32>
@@ -175,13 +240,34 @@ TEST_F(QuantizationReportTest,
   const QuantizationResult& quantized_result = results.results(0);
   EXPECT_THAT(quantized_result.quantizable_unit().name(),
               StrEq("composite_dot_general_fn_2"));
-  EXPECT_FALSE(quantized_result.has_method());
+  EXPECT_TRUE(quantized_result.method().has_static_range_ptq());
 
   // Test that the non-quantized op is captured in `results`.
   const QuantizationResult& non_quantized_result = results.results(1);
   EXPECT_THAT(non_quantized_result.quantizable_unit().name(),
               StrEq("composite_dot_general_fn_1"));
   EXPECT_TRUE(non_quantized_result.method().has_no_quantization());
+}
+
+TEST_F(QuantizationReportTest, ToString) {
+  QuantizationResult result{};
+  QuantizableUnit& quantizable_unit = *result.mutable_quantizable_unit();
+  quantizable_unit.set_name("quantized_my_function");
+
+  Method& method = *result.mutable_method();
+  method.mutable_no_quantization();
+
+  QuantizationReport report{};
+  report.AddQuantizationResult(std::move(result));
+
+  // Check that the report string is equivalent to the textproto representation
+  // of the `QuantizationResults`.
+  std::string result_str{};
+  TextFormat::PrintToString(report.GetQuantizationResults(), &result_str);
+
+  EXPECT_THAT(report.ToString(), testing::HasSubstr("Quantization Report"));
+  EXPECT_THAT(report.ToString(), testing::HasSubstr(result_str));
+  EXPECT_THAT(report.ToString(), testing::HasSubstr("Quantization Report End"));
 }
 
 }  // namespace

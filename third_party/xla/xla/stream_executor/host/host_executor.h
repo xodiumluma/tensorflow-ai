@@ -49,9 +49,10 @@ namespace host {
 // This is useful for evaluating the performance of host-based or fallback
 // routines executed under the context of a GPU executor.
 // See stream_executor.h for description of the below operations.
-class HostExecutor : public StreamExecutorInterface {
+class HostExecutor : public StreamExecutor {
  public:
-  explicit HostExecutor(int device_ordinal) : device_ordinal_(device_ordinal) {}
+  HostExecutor(Platform* platform, int device_ordinal)
+      : StreamExecutor(platform), device_ordinal_(device_ordinal) {}
 
   absl::Status Init() override;
 
@@ -101,9 +102,6 @@ class HostExecutor : public StreamExecutorInterface {
   absl::Status SynchronousMemcpy(void* host_dst,
                                  const DeviceMemoryBase& gpu_src,
                                  uint64_t size) override;
-  absl::Status SynchronousMemcpyDeviceToDevice(DeviceMemoryBase* gpu_dst,
-                                               const DeviceMemoryBase& gpu_src,
-                                               uint64_t size) override;
 
   bool HostCallback(Stream* stream,
                     absl::AnyInvocable<absl::Status() &&> callback) override;

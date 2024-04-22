@@ -72,7 +72,7 @@ class GpuCommandBuffer;
 
 // CUDA-platform implementation of the platform-agnostic
 // StreamExecutorInterface.
-class GpuExecutor : public StreamExecutorInterface {
+class GpuExecutor : public StreamExecutor {
   // Helper classes to attach a type erased state to the GpuExecutor. Currently,
   // we just need to support some XLA specific state.
   class Object {
@@ -103,8 +103,9 @@ class GpuExecutor : public StreamExecutorInterface {
  public:
   // sub_platform indicates the subplatform used in this executor; it must
   // be a CUDA type.
-  explicit GpuExecutor(int device_ordinal)
-      : device_(0),
+  GpuExecutor(Platform* platform, int device_ordinal)
+      : StreamExecutor(platform),
+        device_(0),
         context_(nullptr),
         device_ordinal_(device_ordinal),
         cc_major_(0),
@@ -207,10 +208,6 @@ class GpuExecutor : public StreamExecutorInterface {
   absl::Status SynchronousMemcpy(void* host_dst,
                                  const DeviceMemoryBase& gpu_src,
                                  uint64_t size) override;
-
-  absl::Status SynchronousMemcpyDeviceToDevice(DeviceMemoryBase* gpu_dst,
-                                               const DeviceMemoryBase& gpu_src,
-                                               uint64_t size) override;
 
   absl::Status MemZero(Stream* stream, DeviceMemoryBase* location,
                        uint64_t size) override;
@@ -448,7 +445,7 @@ class GpuExecutor : public StreamExecutorInterface {
 };
 
 inline GpuExecutor* ExtractGpuExecutor(StreamExecutor* stream_exec) {
-  return static_cast<GpuExecutor*>(stream_exec->implementation());
+  return static_cast<GpuExecutor*>(stream_exec);
 }
 
 }  // namespace gpu

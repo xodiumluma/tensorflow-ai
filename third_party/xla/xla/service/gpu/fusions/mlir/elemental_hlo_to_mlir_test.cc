@@ -1272,6 +1272,43 @@ TEST_F(ElementalHloToMlirTest, ScalarUnsignedConstant) {
   })"));
 }
 
+TEST_F(ElementalHloToMlirTest, ScalarComplexConstant) {
+  TF_EXPECT_OK(Run(R"(
+    ENTRY main {
+      p0 = c64[] parameter(0)
+      c1 = c64[] constant((1.0, 0.0))
+      ROOT add = c64[] add(p0, c1)
+    })",
+                   R"(
+    // CHECK:      @main_add(
+    // CHECK-SAME:     %[[ARG0:.*]]: tensor<complex<f32>>
+    // CHECK:        %[[C_1:.*]] = complex.constant [1.000000e+00 : f32, 0.000000e+00 : f32]
+    // CHECK:        %[[A:.*]] = tensor.extract %[[ARG0]][]
+    // CHECK:        %[[RET:.*]] = complex.add %[[A]], %[[C_1]]
+    // CHECK:        return %[[RET]]
+  })"));
+}
+
+TEST_F(ElementalHloToMlirTest, TensorConstant) {
+  TF_EXPECT_OK(Run(R"(
+    ENTRY main {
+      p0 = f32[2,1] parameter(0)
+      c1 = f32[2,1] constant({{1.0}, {2.0}})
+      ROOT add = f32[2,1] add(p0, c1)
+    })",
+                   R"(
+    // CHECK:      @main_add(
+    // CHECK-SAME:     %[[ARG0:.*]]: tensor<2x1xf32>
+    // CHECK-SAME:     %[[X:.*]]: index {{.*}}, %[[Y:.*]]: index {{.*}}
+    // CHECK:        %[[C_1:.*]] = arith.constant dense<[
+    // CHECK-SAME:       [1.000000e+00], [2.000000e+00]]>
+    // CHECK:        %[[A:.*]] = tensor.extract %[[ARG0]][%[[X]], %[[Y]]]
+    // CHECK:        %[[B:.*]] = tensor.extract %[[C_1]][%[[X]], %[[Y]]]
+    // CHECK:        %[[RET:.*]] = arith.addf %[[A]], %[[B]]
+    // CHECK:        return %[[RET]]
+  })"));
+}
+
 TEST_F(ElementalHloToMlirTest, DynamicSlice) {
   TF_EXPECT_OK(Run(R"(
     ENTRY main {

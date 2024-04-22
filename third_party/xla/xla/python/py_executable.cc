@@ -33,7 +33,6 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "third_party/nanobind/include/nanobind/nanobind.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/layout.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/pjrt_future.h"
 #include "xla/pjrt/pjrt_layout.h"
@@ -48,6 +47,8 @@ limitations under the License.
 #include "xla/python/py_client.h"
 #include "xla/python/py_device.h"
 #include "xla/python/traceback.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/concurrency/ref_count.h"
 #include "tsl/platform/fingerprint.h"
 #include "tsl/platform/logging.h"
@@ -77,7 +78,7 @@ absl::Status PyShardedToken::Await() {
 
 PyLoadedExecutable::PyLoadedExecutable(
     nb_class_ptr<PyClient> client,
-    std::unique_ptr<ifrt::LoadedExecutable> ifrt_loaded_executable,
+    std::shared_ptr<ifrt::LoadedExecutable> ifrt_loaded_executable,
     std::optional<nb_traceback> traceback,
     std::optional<std::string> fingerprint)
     : client_(std::move(client)),
@@ -231,11 +232,10 @@ absl::StatusOr<PyExecuteResults> ExecuteShardedOnLocalDevicesInternal(
     // attach_status_to_results is only supposed to be true when the computation
     // has tokens.
     if (attach_status_to_results) {
-      result_status = PjRtFuture<>::FromStatusFuture(result.status);
+      result_status = result.status;
     }
     if (returned_futures.has_value()) {
-      returned_futures->resize(num_computations, PjRtFuture<>::FromStatusFuture(
-                                                     std::move(result.status)));
+      returned_futures->resize(num_computations, std::move(result.status));
     }
   }
 
