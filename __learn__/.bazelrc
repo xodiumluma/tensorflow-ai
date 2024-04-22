@@ -497,4 +497,8 @@ build:rbe_linux_cpu --extra_execution_platforms="@sigbuild-r2.17-clang_config_pl
 build:rbe_linux_cpu --host_platform="@sigbuild-r2.17-clang_config_platform//:platform"
 build:rbe_linux_cpu --platforms="@sigbuild-r2.17-clang_config_platform://platform"
 # While this is required for Clang17 builds we cannot allow it for GCC builds
-build:rbe_linux_cpu --copt=-Wno-error=unused-command-line-argument 
+build:rbe_linux_cpu --copt=-Wno-error=unused-command-line-argument
+# This below was added in clang-16, see https://reviews.llvm.org/D133574 
+# Once upb is updated, this can be removed - a type definition is used in offset of in current version of upb 
+# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L83.
+build:rbe_linux_cpu --copt=-Wno-gnu-offsetof-extensions
