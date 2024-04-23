@@ -515,4 +515,6 @@ build:rbe_linux_cpu_old --crosstool_top="@ubuntu20.04-gcc9_manylinux2014-cuda11.
 build:rbe_linux_cpu_old --extra_toolchains="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_cuda//crosstool:toolchain-linux-x86_64"
 build:rbe_linux_cpu_old --extra_execution_platforms="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_platform//:platform"
 build:rbe_linux_cpu_old --host_platform="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_platform//:platform"
+build:rbe_linux_cpu_old --platforms="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_platform//:platform"
+build:rbe_linux_cpu_old --python_path="/usr/local/bin/python3.9"
 
