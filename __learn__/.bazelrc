@@ -517,4 +517,6 @@ build:rbe_linux_cpu_old --extra_execution_platforms="@ubuntu20.04-gcc9_manylinux
 build:rbe_linux_cpu_old --host_platform="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_platform//:platform"
 build:rbe_linux_cpu_old --platforms="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_platform//:platform"
 build:rbe_linux_cpu_old --python_path="/usr/local/bin/python3.9"
+build:rbe_linux_cpu_old --repo_env=TF_PYTHON_CONFIG_REPO="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_python3.9"
+common:rbe_linux_cpu_old --remote_instance_name=projects/tensorflow-testing/instances/default_instance
 
