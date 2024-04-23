@@ -520,3 +520,11 @@ build:rbe_linux_cpu_old --python_path="/usr/local/bin/python3.9"
 build:rbe_linux_cpu_old --repo_env=TF_PYTHON_CONFIG_REPO="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_python3.9"
 common:rbe_linux_cpu_old --remote_instance_name=projects/tensorflow-testing/instances/default_instance
 
+build:rbe_linux_cuda --config=cuda_clang_official
+build:rbe_linux_cuda --config=rbe_linux_cpu
+# Configure GPU for remote builds
+build:rbe_linux_cuda --repo_env=REMOTE_GPU_TESTING=1
+build:rbe_linux_cuda --repo_env=TF_CUDA_CONFIG_REPO="@sigbuild-r2.17-clang_config_cuda"
+build:rbe_linux_cuda --repo_env=TF_TENSORRT_CONFIG_REPO="@sigbuild-r2.17-clang_config_tensorrt"
+build:rbe_linux_cuda --repo_env=TF_NCCL_CONFIG_REPO="@sigbuild-r2.17-clang_config_nccl"
+test:rbe_linux_cuda --test_env=LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
