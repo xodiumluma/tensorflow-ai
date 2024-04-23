@@ -502,3 +502,14 @@ build:rbe_linux_cpu --copt=-Wno-error=unused-command-line-argument
 # Once upb is updated, this can be removed - a type definition is used in offset of in current version of upb 
 # https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L83.
 build:rbe_linux_cpu --copt=-Wno-gnu-offsetof-extensions
+# as the Python binary is the same the config is also the same for all containers
+build:rbe_linux_cpu --repo_env=TF_PYTHON_CONFIG_REPO="@sigbuild-r2.17-clang_config_python"
+build:rbe_linux_cpu --python_path="/usr/bin/python3"
+# Amend this for your GCP project settings
+common:rbe_linux_cpu --remote_instance_name=projects/tensorflow-testing/instances/default_instance
+
+# @todo(kanglan): once toolchain update is complete, take this out
+build:rbe_linux_cpu_old --config=rbe_linux
+build:rbe_linux_cpu_old --host_crosstool_top="@ubuntu20.04-gcc9_manylinux2014_cuda11.2-cudnn8.1-tensorrt7.2_config_cuda//crosstool:toolchain"
+build:rbe_linux_cpu_old --crosstool_top="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_configu_cuda//crostool:toolchain"
+build:rbe_linux_cpu_old --extra_toolchains="@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_cuda//crosstool:toolchain-linux-x86_64"
