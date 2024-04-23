@@ -528,3 +528,7 @@ build:rbe_linux_cuda --repo_env=TF_CUDA_CONFIG_REPO="@sigbuild-r2.17-clang_confi
 build:rbe_linux_cuda --repo_env=TF_TENSORRT_CONFIG_REPO="@sigbuild-r2.17-clang_config_tensorrt"
 build:rbe_linux_cuda --repo_env=TF_NCCL_CONFIG_REPO="@sigbuild-r2.17-clang_config_nccl"
 test:rbe_linux_cuda --test_env=LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
+
+build:rbe_linux_cuda_nvcc --config=rbe_linux_cuda
+build:rbe_linux_cuda_nvcc --config=nvcc_clang
+build:rbe_linux_cuda_nvcc --repo_env TF_NCCL_USE_STUB=1
