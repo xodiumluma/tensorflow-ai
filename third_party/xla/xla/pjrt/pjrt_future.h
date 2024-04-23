@@ -184,6 +184,8 @@ class PjRtFutureBase {
       return ref_.CopyRCRef();
     }
 
+    tsl::AsyncValue* GetAsyncValue() const { return ref_.GetAsyncValue(); }
+
    private:
     tsl::AsyncValueRef<T> ref_;
   };
@@ -359,6 +361,9 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
     // value stored in the AsyncValue.
     using Base::Promise::CopyRCRef;
 
+    // Same as above but returns non-owned pointer to underlying AsyncValue.
+    using Base::Promise::GetAsyncValue;
+
     // Sets the promise completed with a given status. Must be called at most
     // once.
     //
@@ -418,32 +423,6 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
     }
     return Base::promise().IsError() ? Base::promise().GetError()
                                      : absl::OkStatus();
-  }
-
-  // TODO(b/333538339): Remove when all users of PjRtFuture<Status> will be
-  // converted to PjRtFuture<>. Currently this is an escape hatch to convert
-  // implicit error of a stateless event to a stateful future.
-  PjRtFuture<absl::Status> ToStatusFuture() {
-    auto promise = PjRtFuture<absl::Status>::CreatePromise();
-    OnReady([promise](absl::Status status) mutable {
-      promise.Set(std::move(status));
-    });
-    return PjRtFuture<absl::Status>(std::move(promise));
-  }
-
-  // TODO(b/333538339): Remove when all users of PjRtFuture<Status> will be
-  // converted to PjRtFuture<>. Currently this is an escape hatch to convert
-  // explicit error carried in a stateful future to a stateless future.
-  static PjRtFuture<> FromStatusFuture(PjRtFuture<absl::Status> future) {
-    PjRtFuture<>::Promise promise = PjRtFuture<>::CreatePromise();
-    future.OnReady([promise](absl::Status status) mutable {
-      if (status.ok()) {
-        promise.Set();
-      } else {
-        promise.SetError(std::move(status));
-      }
-    });
-    return PjRtFuture<>(std::move(promise));
   }
 
   // Registers callback to be called once the future is ready.
