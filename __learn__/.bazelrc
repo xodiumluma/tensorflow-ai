@@ -563,3 +563,12 @@ build:rbe_win_clang --platforms="//tensorflow/tools/toolchains/win:x64_windows-c
 build:rbe_win_clang --compiler=clang-cl
 build:rbe_win_clang --linkopt=/FORCE:MULTIPLE
 build:rbe_win_clang --host_linkopt=/FORCE:MULTIPLE
+
+# TFLITE - generic embedded Linux
+build:elinux --crosstool_top=@local_config_embedded_arm//:toolchain
+build:elinux --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
+build:elinux_aarch64 --config=elinux
+build:elinux_aarch64 --cpu=aarch64
+build:elinux_armhf --config=elinux
+build:elinux_armhf --cpu=armhf
+build:elinux_armhf --copt -mfp16-format=ieee
