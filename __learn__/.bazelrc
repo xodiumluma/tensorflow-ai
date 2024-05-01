@@ -579,3 +579,6 @@ try-import %workspace%/xla_configure.bazelrc
 
 # User config
 try-import %workspace%/.bazelrc.user
+
+# config for building TF2
+test:release_base --test_size_filters=small,medium
