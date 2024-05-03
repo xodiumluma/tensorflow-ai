@@ -83,6 +83,8 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "xla/statusor.h"
 #include "xla/xla_data.pb.h"
+// TODO(b/324133505): remove this GOOGLE_CUDA block after JAX OSS migrates
+// to cuda plugin.
 #if GOOGLE_CUDA
 #include "xla/stream_executor/cuda/cuda_driver.h"
 #endif
@@ -789,10 +791,8 @@ nb::dict PyArray::CudaArrayInterface() {
 }
 
 StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
-                                                nb_class_ptr<PyClient> client) {
-#ifndef GOOGLE_CUDA
-  throw XlaRuntimeError("This operation requires CUDA support.");
-#else
+                                                nb_class_ptr<PyClient> client,
+                                                std::optional<int> device_id) {
   if (!cai.contains("data")) {
     return absl::InvalidArgumentError(
         "CUDA Array Interface does not define `data`");
@@ -828,13 +828,25 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
       PrimitiveType element_type,
       DtypeToPrimitiveType(nb_dtype::from_args(cai["typestr"])));
 
-  // cannot determine device_id/stream when device pointer is NULL.
-  int device_id =
-      (data_value == 0
-           ? 0
-           : stream_executor::gpu::CreatedContexts::GetDeviceOrdinal(data_ptr));
+  // TODO(b/324133505): remove this GOOGLE_CUDA block after JAX OSS migrates
+  // to cuda plugin.
+#ifdef GOOGLE_CUDA
+  if (!device_id.has_value()) {
+    // cannot determine device_id/stream when device pointer is NULL.
+    device_id.emplace(
+        (data_value == 0
+             ? 0
+             : stream_executor::gpu::CreatedContexts::GetDeviceOrdinal(
+                   data_ptr)));
+  }
+#endif  // GOOGLE_CUDA
+
+  if (!device_id.has_value()) {
+    throw XlaRuntimeError(
+        "This operation requires CUDA support from jaxlib or jax cuda plugin.");
+  }
   TF_ASSIGN_OR_RETURN(auto device,
-                      client->DeviceFromLocalHardwareId(device_id));
+                      client->DeviceFromLocalHardwareId(*device_id));
   bool is_default_stream =
       data_value == 0 || version == 2 ||
       (version == 3 && (!cai.contains("stream") || cai["stream"].is_none()));
@@ -891,6 +903,7 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
     return InvalidArgument(
         "This operation is implemented for a PjRt-compatible backend only.");
   }
+  TF_RET_CHECK(pjrt_device->IsAddressable());
   TF_ASSIGN_OR_RETURN(
       auto pjrt_buffer,
       device->client()->pjrt_client()->CreateViewOfDeviceBuffer(
@@ -907,7 +920,6 @@ StatusOr<nb::object> CudaArrayInterfaceToBuffer(const nb::dict& cai,
                       ifrt_client->CreatePjRtArray(std::move(pjrt_buffer)));
   return PyArray::MakeFromSingleDeviceArray(std::move(client), Traceback::Get(),
                                             std::move(ifrt_array), false, true);
-#endif  // GOOGLE_CUDA
 }
 
 Status PyArray::Delete() {
@@ -1444,7 +1456,7 @@ Status PyHostValue::CopyToHostAsync(std::optional<Shape>& dynamic_shape_holder,
   }
   auto transfer_guard_formatter = [ifrt_array] {
     return absl::StrCat(
-        "shape=()", absl::StrJoin(ifrt_array->shape().dims(), ","),
+        "shape=(", absl::StrJoin(ifrt_array->shape().dims(), ","),
         "), dtype=", ifrt_array->dtype().DebugString(),
         ", device=", ifrt_array->sharding().devices().front()->DebugString());
   };
