@@ -284,6 +284,7 @@ build:rocm --define=using_rocm_hipcc=true
 build:rocm --define=tensorflow_mkldnn_contraction_kernel=0
 build:rocm --repo_env TF_NEED_ROCM=1
 
+
 build:sycl --crosstool_top=@local_config_sycl//crosstool:toolchain
 build:sycl --define=using_sycl=true
 build:sycl --define=tensorflow_mkldnn_contraction_kernel=0
@@ -334,6 +335,7 @@ build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
 
 # for Windows MSVC `__cpluscplus` needs this switch to get it right
 # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cpluscplus/
+
 build:windows --copt=/Zc:__cplusplus
 build:windows --host_copt=/Zc:__cplusplus
 

@@ -1015,10 +1015,6 @@ xla_test(
 xla_test(
     name = "scatter_test",
     srcs = ["scatter_test.cc"],
-    backend_tags = {
-        # TODO(b/305008247): Re-enable once fixed.
-        "ghostfish_grm": ["broken"],
-    },
     tags = ["test_hlo_pjrt_runner"],
     deps = [
         ":client_library_test_base",
@@ -1782,6 +1778,7 @@ xla_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
     ],
@@ -2117,6 +2114,7 @@ xla_test(
         ":hlo_test_base",
         ":literal_test_util",
         ":test_macros_header",
+        ":test_utils",
         ":xla_internal_test_main",
         "//xla:literal",
         "//xla/hlo/ir:hlo",
