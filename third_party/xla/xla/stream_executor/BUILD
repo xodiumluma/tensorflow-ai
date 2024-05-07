@@ -128,6 +128,7 @@ cc_library(
         ":stream_executor_plugin_headers",
     ],
     deps = STREAM_EXECUTOR_DEPENDENCIES + [
+        ":stream_executor_interface",
         ":stream_executor_pimpl",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
@@ -513,6 +514,9 @@ cc_library(
     hdrs = ["command_buffer.h"],
     visibility = ["//visibility:private"],
     deps = [
+        ":device_memory",
+        ":launch_dim",
+        ":platform",
         ":stream_executor_headers",
         ":stream_executor_interface",
         "@com_google_absl//absl/functional:any_invocable",
