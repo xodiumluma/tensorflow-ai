@@ -974,6 +974,11 @@ PyArray::Storage::~PyArray_Storage() {
   if (next) {
     next->prev = prev;
   }
+  // Release GIL and then explicitly destroy `ifrt_array` to prevent deadlock on
+  // CPU backend caused by interactions between argument donations and host
+  // callbacks.
+  nb::gil_scoped_release gil_release;
+  ifrt_array.reset();
 }
 
 StatusOr<PyArray> PyArray::CopyToDeviceWithSharding(ifrt::DeviceList devices,
@@ -1546,7 +1551,14 @@ Status PyArray::RegisterTypes(nb::module_& m) {
       absl::StrCat(nb::cast<std::string>(m.attr("__name__")), ".ArrayImpl");
 
   PyType_Spec PyArray_spec = {
+#if PY_VERSION_HEX < 0x030B0000
+      // Work around for https://github.com/python/cpython/issues/89478
+      // CPython 3.10 and earlier assume that the .name value remains alive
+      // forever.
+      /*.name=*/strdup(name.c_str()),
+#else
       /*.name=*/name.c_str(),
+#endif  // PY_VERSION_HEX < 0x030B0000
       /*.basicsize=*/static_cast<int>(sizeof(PyArrayObject)),
       /*.itemsize=*/0,
 #if PY_VERSION_HEX < 0x030C0000
