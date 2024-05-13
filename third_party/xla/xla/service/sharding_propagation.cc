@@ -29,6 +29,8 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/attributes.h"
+#include "absl/base/call_once.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
@@ -492,11 +494,9 @@ bool SupportSpatialPartitioning(
     case HloOpcode::kWhile:
     case HloOpcode::kReduce:
     case HloOpcode::kRngBitGenerator:
-      return true;
     case HloOpcode::kAllReduce:
     case HloOpcode::kReduceScatter:
-      // Only if channel_id is not specified.
-      return instruction->channel_id() == std::nullopt;
+      return true;
     case HloOpcode::kParameter:
       return allow_spmd_sharding_propagation_to_parameters ||
              computation_map.find(instruction->parent()) !=
@@ -3015,6 +3015,17 @@ Status ShardingPropagation::CanonicalizeLayouts(HloModule* module) {
 absl::StatusOr<bool> ShardingPropagation::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
+  // Register custom-call partitioner for SharBarrierFrom and ShardBarrierTo.
+  ABSL_CONST_INIT static absl::once_flag did_registration;
+  absl::call_once(did_registration, [] {
+    RegisterCustomCallPartitioner(
+        spmd::kShardBarrierFrom,
+        std::make_unique<spmd::ShardBarrierFromPartitioner>());
+    RegisterCustomCallPartitioner(
+        spmd::kShardBarrierTo,
+        std::make_unique<spmd::ShardBarrierToPartitioner>());
+  });
+
   std::optional<absl::flat_hash_map<const HloInstruction*, HloSharding>>
       original_sharding;
   bool any_changed = false;
