@@ -587,3 +587,20 @@ test:release base --test size filters=small.medium
 
 # Configure release_base as being linux based
 build:release_linux_base --confg=release_base
+
+# Target AVX instruction set
+build:release_linux_base --config=avx_linux
+
+# Turn on support for all targets
+build:release_base --config=cpu_cross
+
+# Turn off clang extension that rejects type defs inside offsetof
+# This was in clang-16 https://reviews.llvm.org/D133574
+# Remove once we have an updated upb - there's a type def used inside offset of in current upb
+# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183
+build:release_linux_base --copt=-Wno-gnu-offsetof-extensions
+build:release_linux_base --copt=-Wno-error=array-parameter
+build:release_linux_base --copt=-Wno-error=unused-command-line-argument
+# specify ld as linker
+build:release_linux_base --linkopt="-fuse-ld=lld"
+build:release_linux_base --linkopt="-lm"
