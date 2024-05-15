@@ -21,6 +21,7 @@ limitations under the License.
 #endif  // XLA_FFI_FFI_H_
 
 #include <algorithm>
+#include <cassert>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,7 @@ limitations under the License.
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -308,6 +310,18 @@ std::optional<Buffer<dtype, rank>> DecodeBuffer(XLA_FFI_Buffer* buf,
 
 }  // namespace internal
 
+using ResultBufferBase = Result<BufferBase>;
+template <DataType dtype, size_t rank = internal::kDynamicRank>
+using ResultBuffer = Result<Buffer<dtype, rank>>;
+
+// clang-format off
+template <DataType dtype> using ResultBufferR0 = ResultBuffer<dtype, 0>;
+template <DataType dtype> using ResultBufferR1 = ResultBuffer<dtype, 1>;
+template <DataType dtype> using ResultBufferR2 = ResultBuffer<dtype, 2>;
+template <DataType dtype> using ResultBufferR3 = ResultBuffer<dtype, 3>;
+template <DataType dtype> using ResultBufferR4 = ResultBuffer<dtype, 4>;
+// clang-format on
+
 //===----------------------------------------------------------------------===//
 // Arguments binding
 //===----------------------------------------------------------------------===//
@@ -490,6 +504,34 @@ struct ResultEncoding<Error> {
 };
 
 //===----------------------------------------------------------------------===//
+// Error helpers
+//===----------------------------------------------------------------------===//
+
+namespace internal {
+
+struct ErrorUtil {
+  static const char* GetErrorMessage(const XLA_FFI_Api* api,
+                                     XLA_FFI_Error* error) {
+    XLA_FFI_Error_GetMessage_Args args;
+    args.struct_size = XLA_FFI_Error_GetMessage_Args_STRUCT_SIZE;
+    args.priv = nullptr;
+    args.error = error;
+    api->XLA_FFI_Error_GetMessage(&args);
+    return args.message;
+  }
+
+  static void DestroyError(const XLA_FFI_Api* api, XLA_FFI_Error* error) {
+    XLA_FFI_Error_Destroy_Args args;
+    args.struct_size = XLA_FFI_Error_Destroy_Args_STRUCT_SIZE;
+    args.priv = nullptr;
+    args.error = error;
+    api->XLA_FFI_Error_Destroy(&args);
+  }
+};
+
+}  // namespace internal
+
+//===----------------------------------------------------------------------===//
 // PlatformStream
 //===----------------------------------------------------------------------===//
 
@@ -513,30 +555,72 @@ struct CtxDecoding<PlatformStream<T>> {
 
     if (XLA_FFI_Error* error = api->XLA_FFI_Stream_Get(&args); error) {
       diagnostic.Emit("Failed to get platform stream: ")
-          << GetErrorMessage(api, error);
-      DestroyError(api, error);
+          << internal::ErrorUtil::GetErrorMessage(api, error);
+      internal::ErrorUtil::DestroyError(api, error);
       return std::nullopt;
     }
 
     return reinterpret_cast<T>(args.stream);
   }
+};
 
-  static const char* GetErrorMessage(const XLA_FFI_Api* api,
-                                     XLA_FFI_Error* error) {
-    XLA_FFI_Error_GetMessage_Args args;
-    args.struct_size = XLA_FFI_Error_GetMessage_Args_STRUCT_SIZE;
-    args.priv = nullptr;
-    args.error = error;
-    api->XLA_FFI_Error_GetMessage(&args);
-    return args.message;
-  }
+//===----------------------------------------------------------------------===//
+// UserData
+//===----------------------------------------------------------------------===//
 
-  static void DestroyError(const XLA_FFI_Api* api, XLA_FFI_Error* error) {
-    XLA_FFI_Error_Destroy_Args args;
-    args.struct_size = XLA_FFI_Error_Destroy_Args_STRUCT_SIZE;
+// All user data types that are passed via the execution context must be
+// registered with the XLA FFI ahead of time to get unique type id.
+using TypeId = XLA_FFI_TypeId;  // NOLINT
+
+inline XLA_FFI_Error* RegisterType(const XLA_FFI_Api* api,
+                                   std::string_view name,
+                                   XLA_FFI_TypeId* type_id) {
+  XLA_FFI_TypeId_Register_Args args;
+  args.struct_size = XLA_FFI_TypeId_Register_Args_STRUCT_SIZE;
+  args.priv = nullptr;
+  args.name = XLA_FFI_ByteSpan{name.data(), name.size()};
+  args.type_id = type_id;
+  return api->XLA_FFI_TypeId_Register(&args);
+}
+
+#define XLA_FFI_REGISTER_TYPE(API, NAME, TYPE_ID) \
+  XLA_FFI_REGISTER_TYPE_(API, NAME, TYPE_ID, __COUNTER__)
+#define XLA_FFI_REGISTER_TYPE_(API, NAME, TYPE_ID, N)  \
+  XLA_FFI_ATTRIBUTE_UNUSED static const XLA_FFI_Error* \
+      xla_ffi_type_##N##_registered_ =                 \
+          [] { return ::xla::ffi::RegisterType(API, NAME, TYPE_ID); }()
+
+// A type tag for automatic decoding user data passed via the execution context.
+template <typename T>
+struct UserData {};
+
+template <typename T>
+struct CtxDecoding<UserData<T>> {
+  using Type = T*;
+
+  static_assert(std::is_same_v<decltype(T::id), TypeId>,
+                "UserData type must have a static `TypeId id` field");
+
+  static std::optional<Type> Decode(const XLA_FFI_Api* api,
+                                    XLA_FFI_ExecutionContext* ctx,
+                                    DiagnosticEngine& diagnostic) {
+    XLA_FFI_ExecutionContext_Get_Args args;
+    args.struct_size = XLA_FFI_ExecutionContext_Get_Args_STRUCT_SIZE;
     args.priv = nullptr;
-    args.error = error;
-    api->XLA_FFI_Error_Destroy(&args);
+    args.ctx = ctx;
+    args.type_id = &T::id;
+    args.data = nullptr;
+
+    assert(args.type_id->type_id > 0 && "type must be registered with XLA FFI");
+
+    if (XLA_FFI_Error* err = api->XLA_FFI_ExecutionContext_Get(&args); err) {
+      diagnostic.Emit("Failed to get user data from execution context: ")
+          << internal::ErrorUtil::GetErrorMessage(api, err);
+      internal::ErrorUtil::DestroyError(api, err);
+      return std::nullopt;
+    }
+
+    return static_cast<Type>(args.data);
   }
 };
 

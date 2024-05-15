@@ -1,8 +1,9 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@local_tsl//tsl/platform:build_config.bzl", "tf_proto_library")
 load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load("//xla:xla.bzl", "xla_cc_test")
-load("//xla/stream_executor:build_defs.bzl", "stream_executor_friends", "stream_executor_internal")
+load("//xla/stream_executor:build_defs.bzl", "stream_executor_build_defs_bzl_deps", "stream_executor_friends", "stream_executor_internal")
 load("//xla/tsl:tsl.bzl", "internal_visibility", "transitive_hdrs")
 load("//xla/tsl:tsl.default.bzl", "filegroup")
 
@@ -23,6 +24,16 @@ package_group(
 package_group(
     name = "internal",
     packages = stream_executor_internal(),
+)
+
+bzl_library(
+    name = "build_defs_bzl",
+    srcs = ["build_defs.bzl"],
+    deps = [
+        "@local_config_cuda//cuda:build_defs_bzl",
+        "@local_tsl//tsl/platform:rules_cc_bzl",
+        "@local_tsl//tsl/platform/default:cuda_build_defs_bzl",
+    ] + stream_executor_build_defs_bzl_deps(),
 )
 
 #===--------------------------------------------------------------------------------------------===#
@@ -510,20 +521,33 @@ cc_library(
 
 cc_library(
     name = "command_buffer",
-    srcs = ["command_buffer.cc"],
     hdrs = ["command_buffer.h"],
     visibility = ["//visibility:private"],
     deps = [
         ":device_memory",
+        ":kernel",
         ":launch_dim",
         ":platform",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/lib/gtl:int_type",
+        "@local_tsl//tsl/platform:errors",
+    ],
+)
+
+cc_library(
+    name = "trace_command_buffer_factory",
+    srcs = ["trace_command_buffer_factory.cc"],
+    hdrs = ["trace_command_buffer_factory.h"],
+    visibility = [":internal"],
+    deps = [
+        ":command_buffer",
         ":stream_executor_headers",
         ":stream_executor_interface",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/lib/gtl:int_type",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
     ],
@@ -581,8 +605,9 @@ cc_library(
     deps = [
         ":device_memory",
         ":kernel_spec",
+        ":launch_dim",
         ":platform",
-        ":stream_executor_headers",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/status",
@@ -592,6 +617,35 @@ cc_library(
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:platform_port",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+cc_library(
+    name = "kernel_factory",
+    hdrs = ["kernel_factory.h"],
+    deps = [
+        ":kernel",
+        ":kernel_spec",
+        ":stream_executor_interface",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+cc_library(
+    name = "typed_kernel_factory",
+    hdrs = ["typed_kernel_factory.h"],
+    deps = [
+        ":kernel",
+        ":kernel_factory",
+        ":kernel_spec",
+        ":stream_executor_interface",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
     ],
 )
@@ -698,6 +752,7 @@ xla_cc_test(
     deps = [
         ":device_memory",
         ":stream_executor",
+        ":typed_kernel_factory",
         "//xla/stream_executor/host:host_platform",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_benchmark",
