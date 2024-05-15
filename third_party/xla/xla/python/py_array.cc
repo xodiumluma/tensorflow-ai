@@ -257,8 +257,10 @@ extern "C" void PyArray_tp_dealloc(PyObject* self) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_CLEAR(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_ClearManagedDict(self);
+#else
+  PyObject_ClearManagedDict(self);
 #endif  // PY_VERSION_HEX < 0x030C0000
 
   tp->tp_free(self);
@@ -271,8 +273,10 @@ extern "C" int PyArray_tp_traverse(PyObject* self, visitproc visit, void* arg) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_VISIT(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_VisitManagedDict(self, visit, arg);
+#else
+  PyObject_VisitManagedDict(self, visit, arg);
 #endif  // PY_VERSION_HEX < 0x030C0000
   // https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_traverse
   Py_VISIT(Py_TYPE(self));
@@ -284,8 +288,10 @@ extern "C" int PyArray_tp_clear(PyObject* self) {
 #if PY_VERSION_HEX < 0x030C0000
   PyObject*& dict = *_PyObject_GetDictPtr(self);
   Py_CLEAR(dict);
-#else
+#elif PY_VERSION_HEX < 0x030D0000
   _PyObject_ClearManagedDict(self);
+#else
+  PyObject_ClearManagedDict(self);
 #endif  // PY_VERSION_HEX < 0x030C0000
   return 0;
 }
@@ -1405,6 +1411,13 @@ StatusOr<nb::object> PyHostValue::AsNumPyArray(
     std::optional<Shape>& dynamic_shape_holder, ifrt::Array* ifrt_array) {
   if (ifrt_array->IsDeleted()) {
     return InvalidArgument("DeviceArray has been deleted.");
+  }
+  // The only `jax.Array` with token-shape buffer is the one wrapped by
+  // `jax.core.Token`. Since it is an internal implementation detail, we
+  // don't support converting it to a numpy array.
+  if (ifrt_array->dtype().kind() == ifrt::DType::kToken) {
+    return InvalidArgument(
+        "Cannot convert a token-shape buffer to a numpy array.");
   }
   auto* arr = llvm::dyn_cast_or_null<ifrt::PjRtCompatibleArray>(ifrt_array);
   if (arr != nullptr) {

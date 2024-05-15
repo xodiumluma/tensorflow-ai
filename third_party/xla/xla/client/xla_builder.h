@@ -75,11 +75,9 @@ struct XlaBuilderFriend {
       std::string execution_thread, const XlaComputation& called_computation,
       const Shape& shape);
   static XlaOp BuildAsyncUpdate(XlaBuilder* builder, XlaOp operands,
-                                std::string execution_thread,
-                                int64_t called_computation, const Shape& shape);
+                                const Shape& shape);
   static XlaOp BuildAsyncDone(XlaBuilder* builder, XlaOp operands,
-                              std::string execution_thread,
-                              int64_t called_computation, const Shape& shape);
+                              const Shape& shape);
 
   static XlaOp BuildAllGatherStart(
       XlaBuilder* builder, XlaOp operand, int64_t all_gather_dimension,
@@ -2566,7 +2564,10 @@ XlaOp ReduceScatter(
     const std::optional<Layout>& layout = std::nullopt,
     std::optional<bool> use_global_device_ids = std::nullopt);
 
-// Enqueues an operation that do an Alltoall of the operand cross cores.
+// Enqueues an operation that do an AllToAll of the operand cross cores.
+// This involves AllToAll, followed by Reshape, Transpose, and another Reshape
+// to get proper codegen. See implementation for additional details.
+//
 // An optional `layout` can be specified to force the layout of the instruction.
 // This is used to guarantee the same layout for a group of AllToAll ops
 // compiled separately.

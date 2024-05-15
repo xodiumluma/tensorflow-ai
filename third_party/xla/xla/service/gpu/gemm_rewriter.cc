@@ -205,7 +205,7 @@ std::vector<std::pair<HloInstruction *, int>> FindF8SubgraphRecursive(
       instr->opcode() == HloOpcode::kDynamicSlice ||
       instr->opcode() == HloOpcode::kPad) {
     return FindF8SubgraphRecursive(instr->mutable_operand(0), visited_instrs,
-                                   subgraph);
+                                   std::move(subgraph));
   } else if (instr->opcode() == HloOpcode::kMultiply ||
              instr->opcode() == HloOpcode::kSelect) {
     for (int k = 0; k < 2; ++k) {
@@ -430,7 +430,7 @@ auto BcastConstScalarNear(double value) {
         // Not a very robust floating-point comparison, but good enough for our
         // purposes.
         std::optional<double> actual =
-            tensorflow::down_cast<const HloConstantInstruction *>(instr)
+            xla::Cast<const HloConstantInstruction>(instr)
                 ->literal()
                 .GetAsDouble({});
         if (!actual.has_value()) return false;
@@ -534,8 +534,10 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
     }
 
     CHECK(!instr->IsRank2Transpose());
-    CHECK(!instr->mutable_operand(0)->IsRank2Transpose());
-    CHECK(!instr->mutable_operand(1)->IsRank2Transpose());
+    if (instr->operand(0)->IsRank2Transpose() ||
+        instr->operand(1)->IsRank2Transpose()) {
+      return absl::OkStatus();
+    }
     // Create a GemmBackendConfig based on the instruction.
     TF_ASSIGN_OR_RETURN(GpuBackendConfig gpu_backend_config,
                         instr->backend_config<GpuBackendConfig>());
@@ -603,10 +605,11 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
                               TurnF8DotWithUnsupportedOutputTypeIntoF32(instr));
         }
 #endif  // TENSORFLOW_USE_ROCM
-        TF_ASSIGN_OR_RETURN(bool created_call,
-                            CreateF8CustomCall(instr, gpu_backend_config, a, b,
-                                               a_scale, b_scale, a_mult_scale,
-                                               b_mult_scale, a_ops, b_ops));
+        TF_ASSIGN_OR_RETURN(
+            bool created_call,
+            CreateF8CustomCall(instr, gpu_backend_config, a, b, a_scale,
+                               b_scale, a_mult_scale, b_mult_scale,
+                               std::move(a_ops), std::move(b_ops)));
         if (created_call) {
           return absl::OkStatus();
         }
@@ -2230,7 +2233,8 @@ class GemmWorkspaceRewriteVisitor : public DfsHloRewriteVisitor {
         instr->custom_call_target() == kCublasLtMatmulF8CallTarget) {
       TF_ASSIGN_OR_RETURN(const auto gpu_config,
                           instr->backend_config<xla::gpu::GpuBackendConfig>());
-      xla::gpu::GemmBackendConfig config = gpu_config.gemm_backend_config();
+      const xla::gpu::GemmBackendConfig &config =
+          gpu_config.gemm_backend_config();
       xla::gpu::GemmBackendConfig_Epilogue epilogue = config.epilogue();
       TF_ASSIGN_OR_RETURN(
           has_aux_output,
