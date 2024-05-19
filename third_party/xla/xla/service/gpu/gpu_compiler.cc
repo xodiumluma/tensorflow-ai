@@ -404,8 +404,6 @@ GpuThunkAotCompilationResult::LoadExecutable(
       ir_emitter->EmitHloComputation(hlo_module->entry_computation()));
   std::unique_ptr<ThunkSequence> thunk_sequence =
       ir_emitter->ConsumeThunkSequence();
-  ForAllThunks([](Thunk* thunk) { thunk->ClearCompileTimeInfo(); },
-               thunk_sequence.get());
 
   // Get all other fields required by GpuExecutable.
   std::vector<GpuExecutable::ConstantInfo> constants =
@@ -691,7 +689,8 @@ absl::Status RunOptimizationPasses(
   // handle it.
   pipeline.AddPass<ZeroSizedHloElimination>();
 
-  if (debug_options.xla_gpu_deterministic_ops()) {
+  if (debug_options.xla_gpu_deterministic_ops() ||
+      debug_options.xla_gpu_exclude_nondeterministic_ops()) {
     // Scatter can be indeterministic if indices are not unique or a non
     // associative combiner function is used. Eliminate these Scatter ops.
     pipeline.AddPass<ScatterExpander>(
@@ -1224,6 +1223,11 @@ absl::Status GpuCompiler::OptimizeHloModule(
     // duplicate or NOPs, so remove them with algebraic simplification and CSE.
     layout_normalization_pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(
         simplifier_options);
+    // Layout normalization will create broadcasts that are not canonical.
+    layout_normalization_pipeline.AddPass<BroadcastCanonicalizer>();
+    // Layout normalization will create scatters that are not simplified and
+    // also have unsorted update_window_dims.
+    layout_normalization_pipeline.AddPass<ScatterSimplifier>();
   }
   TF_RETURN_IF_ERROR(layout_normalization_pipeline.Run(hlo_module).status());
   // Run target-specific HLO optimization passes after layout assignment.
@@ -1376,6 +1380,9 @@ absl::Status GpuCompiler::OptimizeHloPostLayoutAssignment(
       // Remove any redundant operations (such as bitcasts) introduced by layout
       // normalization.
       pipeline.AddPass<HloPassFix<AlgebraicSimplifier>>(simplifier_options);
+      // Layout normalization will create scatters that are not simplified and
+      // also have unsorted update_window_dims.
+      pipeline.AddPass<ScatterSimplifier>();
     }
     pipeline.AddPass<BroadcastCanonicalizer>();
 
@@ -2161,16 +2168,44 @@ absl::Status GpuCompiler::RunPostSchedulingPipelines(
   {
     HloPassPipeline pipeline("remat-pipeline");
 
-    HloCostAnalysis hlo_cost_analysis(ShapeSizeBytesFunction());
+    const bool enable_offloading = module->config()
+                                       .debug_options()
+                                       .xla_gpu_enable_host_memory_offloading();
     HloRematerialization::RematerializationModeConfig
         rematerialization_mode_config(/*recompute=*/true, /*compress=*/true,
-                                      /*host_offload=*/false);
+                                      /*host_offload=*/enable_offloading);
+    HloCostAnalysis::Options hlo_cost_analysis_options;
+    hlo_cost_analysis_options.shape_size = ShapeSizeBytesFunction();
+    std::optional<HloRematerialization::HostMemoryOffloadConfig>
+        offloading_config = std::nullopt;
+    if (enable_offloading) {
+      constexpr float kGiga = 1e+9;
+      // Fused multiply-add means that these two instructions are computed as
+      // one, so for this case the maximum flops is doubled.
+      constexpr float kFma = 2;
+      float flops_per_sec = gpu_device_info.core_count() *
+                            gpu_device_info.fpus_per_core() *
+                            gpu_device_info.clock_rate_ghz() * kGiga * kFma;
+      int64_t host_memory_space_color =
+          static_cast<int64_t>(se::MemoryType::kHost);
+      hlo_cost_analysis_options.set_flops_per_second(flops_per_sec);
+      hlo_cost_analysis_options.set_transcendentals_per_second(flops_per_sec);
+      offloading_config =
+          std::make_optional<HloRematerialization::HostMemoryOffloadConfig>(
+              /*host_memory_space=*/host_memory_space_color,
+              /*bandwidth_to_host_bytes_per_second=*/
+              gpu_device_info.memory_bandwidth(),
+              /*bandwidth_from_host_bytes_per_second=*/
+              gpu_device_info.memory_bandwidth());
+    }
+    HloCostAnalysis hlo_cost_analysis(hlo_cost_analysis_options);
     HloRematerialization::Options options(
         hlo_cost_analysis, rematerialization_mode_config,
         // Assume 75% of the total device memory is available for XLA.
         /*memory_limit_bytes=*/scheduler_mem_limit,
         /*block_size_limit=*/1, /*block_rematerialization_factor=*/1,
-        /*min_remat_size=*/0, /*compact_shape_function=*/nullptr);
+        /*min_remat_size=*/0, /*compact_shape_function=*/nullptr,
+        /*host_memory_offload_config=*/offloading_config);
     HloRematerialization::RematerializationSizes sizes;
     pipeline.AddPass<HloRematerialization>(options, sizes);
     pipeline.AddPass<StreamAttributeAnnotator>();
