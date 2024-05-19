@@ -604,3 +604,11 @@ build:release_linux_base --copt=-Wno-error=unused-command-line-argument
 # specify ld as linker
 build:release_linux_base --linkopt="-fuse-ld=lld"
 build:release_linux_base --linkopt="-lm"
+
+# Disable this check - invalid linker scripts in build
+build:release_linux_base --linkopt=-Wl,--undefined-version
+
+# Container config
+build:release_linux_base --action_env PYTHON_BIN_PATH="/usr/bin/python3"
+build:release_linux_base --action_env PYTHON_LIB_PATH="/usr/lib/tf_python"
+build:release_linux_base --python_path="/usr/bin/python3"
