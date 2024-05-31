@@ -85,6 +85,7 @@ filegroup(
         "platform_manager.h",
         "scratch_allocator.h",
         "stream.h",
+        "stream_common.h",
         "stream_executor.h",
     ],
     visibility = ["//visibility:private"],
@@ -227,7 +228,6 @@ cc_library(
         ":module_spec",
         ":stream_executor_headers",
         ":stream_executor_interface",
-        ":stream_interface",
         "//xla:test",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
@@ -452,7 +452,6 @@ cc_library(
     ],
     deps = [
         ":stream_executor_headers",
-        ":stream_interface",
         "//xla/stream_executor/platform",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/status",
@@ -480,7 +479,6 @@ cc_library(
     deps = STREAM_EXECUTOR_DEPENDENCIES + if_static([
         "@com_google_protobuf//:protobuf",  # indirectly-used by dnn.h
     ]) + [
-        ":stream_interface",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:thread_annotations",
@@ -503,14 +501,6 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
-    ],
-)
-
-cc_library(
-    name = "stream_interface",
-    hdrs = ["stream_interface.h"],
-    deps = [
-        ":platform",
     ],
 )
 
@@ -678,10 +668,13 @@ transitive_hdrs(
 cc_library(
     name = "stream_executor_pimpl",
     srcs = [
-        "stream.cc",
+        "stream_common.cc",
         "stream_executor_pimpl.cc",
     ],
-    hdrs = ["stream_executor_pimpl.h"],
+    hdrs = [
+        "stream_common.h",
+        "stream_executor_pimpl.h",
+    ],
     tags = ["avoid_dep"],
     visibility = ["//visibility:private"],
     deps = [
@@ -711,6 +704,7 @@ cc_library(
         "@local_tsl//tsl/platform:stacktrace",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
+        "@local_tsl//tsl/platform:thread_annotations",
     ],
 )
 
@@ -763,6 +757,7 @@ xla_cc_test(
     deps = [
         ":stream_executor",
         "//xla/stream_executor/host:host_platform",
+        "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
