@@ -32,6 +32,7 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "third_party/gpus/cudnn/cudnn_version.h"
+#include "xla/comparison_util.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_clone_context.h"
@@ -42,14 +43,18 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/primitive_util.h"
+#include "xla/service/dump.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cudnn_support_utils.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/triton_fusion_analysis.h"
+#include "xla/shape_util.h"
 #include "xla/stream_executor/cuda/cuda_dnn.h"
 #include "xla/stream_executor/cuda/cudnn_frontend_helpers.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
@@ -273,10 +278,10 @@ class GemmDimensionAdapter {
           }
           switch (scope) {
             case TritonFusionAnalysis::Scope::LHS:
-              lhs_noncontracting_split = spec->back().count;
+              lhs_noncontracting_split_ = spec->back().count;
               break;
             case TritonFusionAnalysis::Scope::OUTPUT:
-              if (lhs_noncontracting_split != spec->back().count) {
+              if (lhs_noncontracting_split_ != spec->back().count) {
                 VLOG(8) << "Output non-contracting dimension has to be split "
                            "the same way as the LHS input one if it is split.";
                 return false;
@@ -299,15 +304,15 @@ class GemmDimensionAdapter {
         strides.push_back(spec->front().stride);
       }
     }
-    if (lhs_noncontracting_split > 1 &&
+    if (lhs_noncontracting_split_ > 1 &&
         scope == TritonFusionAnalysis::Scope::OUTPUT &&
         dimensions[kBatchDimensionIndex] == 1) {
       // LHS input noncontracting dimension is split but the corresponding
       // output one is not. Assign part of the output one to the unused batch
       // dimension.
-      dimensions[kBatchDimensionIndex] = lhs_noncontracting_split;
+      dimensions[kBatchDimensionIndex] = lhs_noncontracting_split_;
       dimensions[kOutputLHSNonContractingDimensionIndex] /=
-          lhs_noncontracting_split;
+          lhs_noncontracting_split_;
       strides[kBatchDimensionIndex] =
           strides[kOutputLHSNonContractingDimensionIndex] *
           dimensions[kOutputLHSNonContractingDimensionIndex];
@@ -316,7 +321,7 @@ class GemmDimensionAdapter {
   }
 
  private:
-  int64_t lhs_noncontracting_split = 1;
+  int64_t lhs_noncontracting_split_ = 1;
   const HloDotInstruction& dot_;
 };
 
@@ -569,6 +574,16 @@ absl::StatusOr<std::optional<se::gpu::CudnnGraph>> HloFusionToCuDnnGraph(
       .set_dim(dimensions)
       .set_stride(strides)
       .set_uid(se::gpu::CuDnnTensorUID(fusion.operand_count()));
+  if (!fusion.GetModule()->config().debug_options().xla_dump_to().empty()) {
+    json dump;
+    graph.serialize(dump);
+    DumpToFileInDirOrStdout(
+        /*module=*/*fusion.GetModule(),
+        /*file_prefix=*/"",
+        /*file_suffix=*/
+        absl::StrCat("cudnn_fusion_", fusion.name(), ".json"),
+        /*contents=*/dump.dump(1));
+  }
   if (cudnn_frontend::error_t result = graph.validate(); result.is_bad()) {
     VLOG(3) << result.get_message();
     return std::nullopt;
@@ -585,7 +600,6 @@ absl::StatusOr<se::gpu::CudnnGraph> PrepareGraph(
   if (!graph.has_value()) {
     return absl::InternalError("Construction of cuDNN graph failed.");
   }
-  VLOG(6) << graph->Graph().print();
   TF_ASSIGN_OR_RETURN(bool supported, graph->Prepare(dnn_support));
   if (!supported) {
     return absl::InternalError("cuDNN graph is not supported.");

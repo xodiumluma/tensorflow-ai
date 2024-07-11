@@ -98,6 +98,10 @@ static absl::Duration TerminateTimeout() {
                                   : absl::InfiniteDuration();
 }
 
+static bool TerminateOnNcclError() {
+  return xla::GetDebugOptionsFromFlags().xla_gpu_nccl_terminate_on_error();
+}
+
 //===----------------------------------------------------------------------===//
 // NcclClique
 //===----------------------------------------------------------------------===//
@@ -129,11 +133,11 @@ void NcclCliqueCommunicators::ForEachComm(
 }
 
 std::string NcclCliqueCommunicators::DebugString() const {
-  std::string out =
-      absl::StrFormat("clique_key: %s; hash(id): %d; size: %d; communicators: ",
-                      clique_key_.ToString(),
-                      clique_id_.has_value() ? absl::HashOf(*clique_id_) : 0,
-                      communicators_.size());
+  std::string out = absl::StrFormat(
+      "clique_key: %s; fingerprint(id): %d; size: %d; communicators: ",
+      clique_key_.ToString(),
+      clique_id_.has_value() ? clique_id_->fingerprint() : 0,
+      communicators_.size());
   int32_t cnt = 0;
   for (const auto& [rank, comm] : communicators_) {
     if (cnt++) absl::StrAppend(&out, ", ");
@@ -180,6 +184,13 @@ static absl::Status CheckComm(NcclApi::NcclCommHandle comm) {
 // Runs async check on all communicators in a clique.
 static void CheckClique(const NcclCliqueKey& clique_key,
                         NcclClique& lockable_clique) {
+  if (TerminateOnNcclError()) {
+    absl::Status status = lockable_clique.CheckAsyncErrors();
+    if (!status.ok()) {
+      LOG(FATAL) << "Terminating process due to async NCCL error: " << status;
+    }
+    return;
+  }
   if (NcclClique::Lock clique = lockable_clique.TryAcquire()) {
     VLOG(5) << "Checking NCCL clique " << clique_key.ToString()
             << " for async errors; num_communicators="
@@ -263,9 +274,10 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
     absl::c_sort(ranks, [](auto& a, auto& b) { return a.rank < b.rank; });
 
     VLOG(3) << absl::StreamFormat(
-        "Create NCCL communicators for clique %s; ranks=[%s]; hash(id)=%d",
+        "Create NCCL communicators for clique %s; ranks=[%s]; "
+        "fingerprint(id)=%d",
         clique_key.ToString(), DeviceRanksToString(ranks),
-        absl::HashOf(clique_id));
+        clique_id.fingerprint());
 
     TF_ASSIGN_OR_RETURN(
         std::vector<NcclApi::OwnedNcclComm> created_comms,
@@ -277,9 +289,10 @@ static absl::StatusOr<std::shared_ptr<NcclClique::Lock>> InitializeNcclClique(
     }
 
     VLOG(3) << absl::StreamFormat(
-        "Created NCCL communicators for clique %s; ranks=[%s]; hash(id)=%d",
+        "Created NCCL communicators for clique %s; ranks=[%s]; "
+        "fingerprint(id)=%d",
         clique_key.ToString(), DeviceRanksToString(ranks),
-        absl::HashOf(clique_id));
+        clique_id.fingerprint());
 
     NcclCliques& cliques = GetNcclCliques();
     absl::MutexLock lock(&cliques.mu);
@@ -508,6 +521,24 @@ absl::StatusOr<std::shared_ptr<NcclClique::Lock>> AcquireNcclClique(
   // If we can't split any of the acquired cliques, create a new one.
   return InitializeNcclClique(device, run_id, clique_key, clique_id_callback,
                               num_local_participants, rank, config);
+}
+
+absl::Status NcclClique::CheckAsyncErrors() {
+  return async_error_checker_.Check();
+}
+
+absl::Status NcclCliqueCommunicators::AsyncErrorChecker::Check() {
+  absl::Status status = absl::OkStatus();
+  communicators_.ForEachComm(
+      [&status](int32_t rank, NcclApi::NcclCommHandle comm) {
+        // Do not overwrite previous errors.
+        if (!status.ok()) return;
+        status = NcclApi::Default()->CommGetAsyncError(comm);
+        if (!status.ok()) {
+          LOG(ERROR) << "NCCL async error (rank " << rank << "): " << status;
+        }
+      });
+  return status;
 }
 
 }  // namespace xla::gpu

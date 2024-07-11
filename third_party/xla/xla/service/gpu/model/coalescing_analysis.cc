@@ -33,21 +33,18 @@ limitations under the License.
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
-#include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/layout.h"
-#include "xla/service/gather_simplifier.h"
 #include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/gpu_fusible.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/hlo_traversal.h"
+#include "xla/service/gpu/model/affine_map_evaluator.h"
 #include "xla/service/gpu/model/indexing_analysis.h"
 #include "xla/service/gpu/model/indexing_map.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/stream_executor/device_description.h"
 
 namespace xla {
 namespace gpu {
@@ -56,7 +53,6 @@ namespace gpu {
 // producer and consumer are considered as one fusion, otherwise it's only the
 // producer.
 bool IsReadCoalescedHeuristic(HloFusionAnalysis::EmitterFusionKind fusion_kind,
-                              const se::DeviceDescription& device_info,
                               const HloInstruction* producer,
                               const HloInstruction* consumer) {
   // Transposing minor dimension breaks coalescing.
@@ -92,60 +88,6 @@ bool IsReadCoalescedHeuristic(HloFusionAnalysis::EmitterFusionKind fusion_kind,
     if (is_bad_transpose(producer)) return false;
     if (consumer && is_bad_transpose(consumer)) return false;
   }
-
-  // Gather is usually uncoalesced, unless the window is big enough and in the
-  // most minor physical dimensions.
-  auto gather_reads_coalesced_window = [&](const HloInstruction* instr) {
-    auto* gather = DynCast<HloGatherInstruction>(instr);
-    if (!GatherSimplifier::IsSimplifiedGather(gather)) {
-      // Gather simplifier pass should make sure we never reach here. In case we
-      // do, let's assume that the gather window dims are not most minor.
-      return false;
-    }
-    auto gather_dnums = gather->gather_dimension_numbers();
-    Layout operand_layout = gather->operand(0)->shape().layout();
-    Layout output_layout = gather->shape().layout();
-    int64_t adjacent_minor_elements = 1;
-    for (auto [i, dim] : llvm::enumerate(operand_layout.minor_to_major())) {
-      // For a simplified gather, the dimensions 1 to 'operand_rank' are the
-      // window dimensions. We want to have the same physical order of the
-      // matching dimensions.
-      if (dim != output_layout.minor_to_major(i) - 1) {
-        break;
-      }
-      int64_t output_slice_size = gather->gather_slice_sizes()[dim];
-      adjacent_minor_elements *= output_slice_size;
-      if (output_slice_size != gather->operand(0)->shape().dimensions(dim)) {
-        break;
-      }
-    }
-    int64_t type_size =
-        ShapeUtil::ByteSizeOfPrimitiveType(gather->shape().element_type());
-    return adjacent_minor_elements * type_size >=
-           device_info.dram_to_l2_transaction_size_bytes();
-  };
-
-  auto is_bad_gather = [&](const HloInstruction* hlo) {
-    if (hlo->opcode() == HloOpcode::kGather) {
-      return !gather_reads_coalesced_window(hlo);
-    }
-    if (hlo->opcode() == HloOpcode::kFusion &&
-        HloAnyOf({hlo->fused_expression_root()},
-                 [&](const HloInstruction* instr) {
-                   return instr->opcode() == HloOpcode::kGather &&
-                          !gather_reads_coalesced_window(instr);
-                 })) {
-      return true;
-    }
-    return false;
-  };
-  if (is_bad_gather(producer)) {
-    return false;
-  }
-  if (consumer && is_bad_gather(consumer)) {
-    return false;
-  }
-
   // Fusing two row reductions breaks coalescing.
   if (fusion_kind == HloFusionAnalysis::EmitterFusionKind::kReduction &&
       IsInputFusibleReduction(*producer) && consumer &&
@@ -380,47 +322,14 @@ std::optional<PartitionedExpr> Partition(AffineExpr expr) {
   return result;
 }
 
-// Given an AffineExpr and the values for its dimensions and symbols, evaluates
-// the result.
-int64_t EvaluateAffineExpr(AffineExpr expr,
-                           const std::vector<int64_t>& dim_values,
-                           const std::vector<int64_t>& symbol_values = {}) {
-  if (auto const_expr = mlir::dyn_cast<AffineConstantExpr>(expr)) {
-    return const_expr.getValue();
-  }
-  if (auto dim_expr = mlir::dyn_cast<AffineDimExpr>(expr)) {
-    return dim_values[dim_expr.getPosition()];
-  }
-  if (auto symbol_expr = mlir::dyn_cast<AffineSymbolExpr>(expr)) {
-    return symbol_values[symbol_expr.getPosition()];
-  }
-  auto binary_expr = mlir::cast<AffineBinaryOpExpr>(expr);
-  int64_t lhs =
-      EvaluateAffineExpr(binary_expr.getLHS(), dim_values, symbol_values);
-  int64_t rhs =
-      EvaluateAffineExpr(binary_expr.getRHS(), dim_values, symbol_values);
-  switch (binary_expr.getKind()) {
-    case AffineExprKind::Add:
-      return lhs + rhs;
-    case AffineExprKind::Mul:
-      return lhs * rhs;
-    case AffineExprKind::FloorDiv:
-      return FloorDiv(lhs, rhs);
-    case AffineExprKind::Mod:
-      return lhs % rhs;
-    default:
-      LOG(FATAL) << "Unsupported expression";
-  }
-}
-
 // Performs backtracking to find all feasible dimensions, symbols that satisfy
 // the constraints and then evaluates the affine map at those.
 // For example, for the following indexing map:
 //   (d0)[s0] -> (d0 + s0)
 //   domain:
-//   d0 in [0, 3]
+//   d0 in [0, 4)
 //   s0 in [0, 1, 2]
-//   s0 mod 2 in [0, 0]
+//   s0 mod 2 in [0, 1)
 // The function will compute the following indices [0, 2, 1, 3, 2, 4, 3, 5].
 void FindAllIndices(AffineExpr expr, int dim_id, int symbol_id,
                     const std::vector<Interval>& dimension_ranges,
@@ -456,8 +365,8 @@ void FindAllIndices(AffineExpr expr, int dim_id, int symbol_id,
 // Computes contiguous intervals of accessed elements.
 // For example, for an indexing map
 //   (thread_x) -> (thread_x * 4 + s0 + (thread_x floordiv 16) * 1984)
-//   d0 in [0, 31]
-//   s0 in [0, 3]
+//   d0 in [0, 32)
+//   s0 in [0, 4)
 // The intervals are [0, 63] and [2047, 2111].
 std::vector<Interval> FindIntervals(
     AffineExpr expr, const std::vector<Interval>& dimension_ranges,
@@ -531,7 +440,7 @@ std::vector<Interval> FindContiguousIntervals(
       // Case 1.3: |multiplier| != 1 and g(s) = s.
       if (partitioned_expr.func_of_s0 == range) {
         Interval range_interval = indexing_map.GetSymbolBound(0);
-        int64_t num_elems = range_interval.NumElements();
+        int64_t num_elems = range_interval.GetLoopTripCount();
         // In this case we get a single interval, because the ranges that every
         // thread is reading overlap.
         if (num_elems >= std::abs(multiplier.getValue())) {
@@ -564,7 +473,7 @@ std::vector<Interval> FindContiguousIntervals(
   }
   // Case 2.2: g(s) = s.
   Interval range_interval = indexing_map.GetSymbolBound(0);
-  return ExtendIntervals(intervals, range_interval.NumElements() - 1);
+  return ExtendIntervals(intervals, range_interval.GetLoopTripCount() - 1);
 }
 
 bool IsIndexingCoalesced(IndexingMap& thread_x_to_linearized_input,
@@ -639,8 +548,7 @@ CoalescingAnalysis::CoalescingAnalysis(
   }
   // If ComputeCoalescingForAllOperands fails, fallback to using the heuristic.
   is_coalesced_computed_by_heuristic_ =
-      IsReadCoalescedHeuristic(fusion_analysis.GetEmitterFusionKind(),
-                               fusion_analysis.device_info(), instr);
+      IsReadCoalescedHeuristic(fusion_analysis.GetEmitterFusionKind(), instr);
 }
 
 CoalescingAnalysis::CoalescingAnalysis(
@@ -658,8 +566,7 @@ CoalescingAnalysis::CoalescingAnalysis(
   }
   // If ComputeCoalescingForAllOperands fails, fallback to using the heuristic.
   is_coalesced_computed_by_heuristic_ = IsReadCoalescedHeuristic(
-      fusion_analysis.GetEmitterFusionKind(), fusion_analysis.device_info(),
-      producer, consumer);
+      fusion_analysis.GetEmitterFusionKind(), producer, consumer);
 }
 
 bool CoalescingAnalysis::ComputeCoalescingForAllOperands(

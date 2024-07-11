@@ -59,6 +59,7 @@ class Tiling {
     }
     if (loops_to_unroll_.empty()) loops_to_unroll_.resize(shape.size());
   }
+  Tiling() = default;
 
   std::string ToString() const {
     return absl::StrJoin(
@@ -100,11 +101,6 @@ class Tiling {
   // id.
   absl::InlinedVector<int64_t, 4> GetThreadStrides() const {
     return *ShapeUtil::ByteStrides(ShapeUtil::MakeShape(U8, num_threads_));
-  }
-
-  // Returns the strides of the block index dimensions wrt. the linear block id.
-  absl::InlinedVector<int64_t, 4> GetBlockStrides() const {
-    return *ShapeUtil::ByteStrides(ShapeUtil::MakeShape(U8, num_blocks_));
   }
 
   int64_t GetNumThreadsPerBlock() const { return Product(num_threads_); }
