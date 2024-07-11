@@ -23,6 +23,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "tsl/platform/status.h"
+
 #if defined(PLATFORM_POSIX) || defined(IS_MOBILE_PLATFORM) || \
     defined(PLATFORM_GOOGLE)
 #include <fnmatch.h>
@@ -90,6 +92,12 @@ absl::Status FileSystem::IsDirectory(const string& name,
 absl::Status FileSystem::HasAtomicMove(const string& path,
                                        bool* has_atomic_move) {
   *has_atomic_move = true;
+  return absl::OkStatus();
+}
+
+absl::Status FileSystem::CanCreateTempFile(const std::string& fname,
+                                           bool* can_create_temp_file) {
+  *can_create_temp_file = true;
   return absl::OkStatus();
 }
 

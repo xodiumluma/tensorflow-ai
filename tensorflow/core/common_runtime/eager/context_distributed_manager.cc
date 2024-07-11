@@ -331,8 +331,7 @@ absl::Status CreateClientOnce(
   }
   auto device_topology_pair = BuildDistributedDevices(
       platform_name, std::move(unique_local_device_states), node_id, num_nodes,
-      gpu_run_options.get(), kv_store,
-      /*enable_mock_nccl=*/false);
+      gpu_run_options.get(), kv_store, /*enable_mock_nccl=*/false);
   if (!device_topology_pair.ok()) {
     if (use_creation_info) {
       creation_state->SetDone();
@@ -352,18 +351,6 @@ absl::Status CreateClientOnce(
     }
   }
 
-  std::shared_ptr<const xla::GpuTopology> gpu_topology = nullptr;
-  if (!device_topology_pair->second.ok()) {
-    LOG(INFO)
-        << "Skipping creating GPU topology since multiple nodes on the same "
-           "host violates GPU topology assumptions. This is expected in tests "
-           "that use multiple threads to simulate multiple workers. If this "
-           "occurs in production and op execution on GPU fails, this could be "
-           "related.";
-  } else {
-    gpu_topology =
-        xla::GpuTopology::FromProto(device_topology_pair->second.value());
-  }
   if (use_creation_info) {
     std::unique_ptr<xla::PjRtClient> pjrt_client =
         std::make_unique<xla::StreamExecutorGpuClient>(
@@ -372,8 +359,8 @@ absl::Status CreateClientOnce(
             /*allocator=*/std::move(info->allocator),
             /*host_memory_allocator=*/std::move(info->host_memory_allocator),
             /*should_stage_host_to_device_transfers=*/true,
-            /*gpu_run_options=*/std::move(gpu_run_options),
-            std::move(gpu_topology));
+            /*gpu_run_options=*/std::move(gpu_run_options), kv_store,
+            xla::GpuTopology::FromProto(device_topology_pair->second));
     VLOG(2) << "PJRT GPU client with remote devices created.";
     auto status = SetPjRtClientInTFGlobalResourceManager(
         DeviceType(DEVICE_GPU), std::move(pjrt_client));

@@ -30,6 +30,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xla/debug_options_flags.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
@@ -44,7 +45,6 @@ limitations under the License.
 #include "xla/service/shape_inference.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
@@ -58,6 +58,8 @@ namespace xla {
 namespace {
 
 namespace m = match;
+
+constexpr int64_t kNumMappedDims = 3;
 
 // ConvolutionVisitor traverses the HLO computation and rewrites Convolution
 // operations with small batch counts into convolutions with larger batch
@@ -2042,7 +2044,7 @@ absl::StatusOr<bool> ConvolutionVisitor::Propagate(HloInstruction* consumer,
       }
       ++outer;
     }
-    std::vector<int64_t> dim_map(NumMappedDims());
+    std::vector<int64_t> dim_map(kNumMappedDims);
     dim_map[DimMapper(SpaceToBatchDimMap::kBatch)] = new_batch_dim;
     dim_map[DimMapper(SpaceToBatchDimMap::kSpace0)] = new_space_dim;
     dim_map[DimMapper(SpaceToBatchDimMap::kFeature)] =
@@ -2136,7 +2138,7 @@ absl::StatusOr<bool> ConvolutionVisitor::Propagate(HloInstruction* consumer,
       }
     }
 
-    std::vector<int64_t> dim_map(NumMappedDims());
+    std::vector<int64_t> dim_map(kNumMappedDims);
     dim_map[DimMapper(SpaceToBatchDimMap::kBatch)] = new_batch_dim;
     dim_map[DimMapper(SpaceToBatchDimMap::kFeature)] = new_feature_dim;
     dim_map[DimMapper(SpaceToBatchDimMap::kSpace0)] = new_space_dim;
@@ -2918,7 +2920,7 @@ absl::Status ConvolutionVisitor::PropagateOnConv(HloInstruction* convolution) {
   old_to_new_instrs_[convolution] = new_conv;
   VLOG(1) << "Space-to-batched convolution " << new_conv->ToString();
 
-  std::vector<int64_t> dim_map(NumMappedDims());
+  std::vector<int64_t> dim_map(kNumMappedDims);
   dim_map[DimMapper(SpaceToBatchDimMap::kBatch)] =
       original_conv_dims.output_batch_dimension();
   dim_map[DimMapper(SpaceToBatchDimMap::kFeature)] =
@@ -3680,7 +3682,7 @@ absl::Status ConvolutionVisitor::PropagateOnBackpropFilterConv(
   old_to_new_instrs_[convolution] = new_conv;
   VLOG(1) << "Space-to-featured convolution " << new_conv->ToString();
 
-  std::vector<int64_t> dim_map(NumMappedDims());
+  std::vector<int64_t> dim_map(kNumMappedDims);
   dim_map[DimMapper(SpaceToBatchDimMap::kBatch)] =
       original_conv_dims.output_batch_dimension();
   dim_map[DimMapper(SpaceToBatchDimMap::kFeature)] =
@@ -4064,7 +4066,7 @@ absl::Status ConvolutionVisitor::PerformSpaceToBatchOnConvolution(
                          old_output_split_spatial_dims));
   old_to_new_instrs_[original_conv] = new_conv;
 
-  std::vector<int64_t> dim_map(NumMappedDims());
+  std::vector<int64_t> dim_map(kNumMappedDims);
   dim_map[DimMapper(SpaceToBatchDimMap::kBatch)] =
       dim_numbers.output_batch_dimension();
   dim_map[DimMapper(SpaceToBatchDimMap::kFeature)] =

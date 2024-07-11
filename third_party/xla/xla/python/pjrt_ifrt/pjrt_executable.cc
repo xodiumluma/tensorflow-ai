@@ -25,6 +25,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/Casting.h"
@@ -50,11 +51,11 @@ limitations under the License.
 #include "xla/python/pjrt_ifrt/pjrt_device.h"
 #include "xla/python/pjrt_ifrt/pjrt_host_callback.h"
 #include "xla/python/pjrt_ifrt/pjrt_memory.h"
+#include "xla/python/pjrt_ifrt/xla_compiler.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/translate/mhlo_to_hlo/type_to_shape.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/util.h"
@@ -181,9 +182,10 @@ char PjRtExecutable::ID = 0;
 char PjRtLoadedExecutable::ID = 0;
 
 absl::StatusOr<std::unique_ptr<Executable>> PjRtExecutable::Create(
-    std::shared_ptr<xla::PjRtExecutable> pjrt_executable) {
-  return std::unique_ptr<Executable>(
-      new PjRtExecutable(std::move(pjrt_executable)));
+    std::shared_ptr<xla::PjRtExecutable> pjrt_executable,
+    std::unique_ptr<XlaCompileOptions> compile_options) {
+  return std::unique_ptr<Executable>(new PjRtExecutable(
+      std::move(pjrt_executable), std::move(compile_options)));
 }
 
 absl::StatusOr<std::optional<std::string>> PjRtExecutable::Fingerprint() const {

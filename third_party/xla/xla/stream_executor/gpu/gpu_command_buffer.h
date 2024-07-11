@@ -38,7 +38,7 @@ limitations under the License.
 #include "xla/stream_executor/gpu/gpu_types.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/launch_dim.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor.h"
 
 namespace stream_executor::gpu {
 
@@ -158,7 +158,6 @@ class GpuCommandBuffer : public CommandBuffer {
   // allocates resources on a GPU devices (rule of thumb is ~8kb per node), so
   // we have to be careful not to keep too many of them alive for too long, or
   // we have a higher risk of OOM errors.
-  static int64_t AllocatedExecs();
   static int64_t AliveExecs();
 
  private:
@@ -356,10 +355,6 @@ class GpuCommandBuffer : public CommandBuffer {
 //===----------------------------------------------------------------------===//
 // Implementation details device kernels required by GpuCommandBuffer.
 //===----------------------------------------------------------------------===//
-
-// A no-op kernel required for creating barriers inside command buffers because
-// empty nodes are not supported within conditional CUDA graphs (in CUDA 12.3).
-void* GetNoOpKernel();
 
 // See `cuda_conditional_kernels.cc` for CUDA implementation. These are
 // various kernels that update Gpu conditionals based on the device memory

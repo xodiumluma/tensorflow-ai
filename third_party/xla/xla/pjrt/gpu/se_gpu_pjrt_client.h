@@ -49,9 +49,8 @@ limitations under the License.
 #include "xla/service/computation_placer.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/shape.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_memory_allocator.h"
-#include "tsl/framework/allocator.h"
+#include "xla/tsl/framework/allocator.h"
 #include "tsl/platform/casts.h"
 #include "tsl/platform/fingerprint.h"
 
@@ -62,14 +61,9 @@ class MultiDeviceAdapter;
 }
 
 namespace xla {
-// TODO(b/342438435): Currently, different call sites need to handle topology
-// errors differently. It will be refactored to
-// std::pair<std::vector<std::unique_ptr<PjRtStreamExecutorDevice>>,
-// GpuTopologyProto> when topology errors can be handled uniformly across all
-// call sites.
 using DeviceTopologyPair =
     std::pair<std::vector<std::unique_ptr<PjRtStreamExecutorDevice>>,
-              absl::StatusOr<GpuTopologyProto>>;
+              GpuTopologyProto>;
 
 class StreamExecutorGpuTopologyDescription : public PjRtTopologyDescription {
  public:
@@ -206,7 +200,8 @@ class StreamExecutorGpuClient : public xla::PjRtStreamExecutorClient {
       std::unique_ptr<tsl::Allocator> host_memory_allocator,
       bool should_stage_host_to_device_transfers,
       std::unique_ptr<gpu::GpuExecutableRunOptions> gpu_run_options,
-      std::shared_ptr<const GpuTopology> gpu_topology = nullptr);
+      std::shared_ptr<KeyValueStoreInterface> kv_store,
+      std::shared_ptr<const GpuTopology> gpu_topology);
 
   absl::StatusOr<xla::DeviceAssignment> GetDefaultDeviceAssignment(
       int num_replicas, int num_partitions) const override;
@@ -254,6 +249,7 @@ class StreamExecutorGpuClient : public xla::PjRtStreamExecutorClient {
 
  private:
   xla::StreamExecutorGpuTopologyDescription topology_;
+  std::shared_ptr<KeyValueStoreInterface> kv_store_;
 };
 
 std::vector<std::unique_ptr<PjRtStreamExecutorDevice>> BuildLocalDevices(

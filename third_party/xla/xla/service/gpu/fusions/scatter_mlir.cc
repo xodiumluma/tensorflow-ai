@@ -38,6 +38,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/primitive_util.h"
 #include "xla/service/gpu/fusions/mlir/computation_partitioner.h"
 #include "xla/service/gpu/fusions/mlir/elemental_hlo_to_mlir.h"
 #include "xla/service/gpu/fusions/mlir/ir/xla_gpu_ops.h"
@@ -68,6 +69,13 @@ using mlir_converter::PartitionedComputations;
 using mlir_converter::ProvideParameter;
 
 }  // namespace
+
+MlirScatterFusion::MlirScatterFusion(const HloFusionAnalysis& analysis)
+    : analysis_(analysis) {
+  const auto& scatter = analysis_.fusion_hero(0).instruction();
+  auto& scatter_update_shape = scatter.operands().back()->shape();
+  config_ = ComputeLoopFusionConfig(analysis, scatter_update_shape);
+}
 
 bool MlirScatterFusion::IsSupported(const HloFusionAnalysis& analysis) {
   const auto* scatter =
@@ -106,8 +114,11 @@ std::optional<IndexingMap> MlirScatterFusion::ComputeThreadIdToInputIndexing(
   }
   // Compute thread id mapping based on the first update operand.
   Shape scatter_update_shape = scatter->scatter_updates().front()->shape();
+
+  // TODO(jreiffers): There are scatters where vectorization makes sense, but we
+  // cannot currently detect them. Add a heuristic.
   IndexingMap scatter_update_map = GetDefaultThreadIdIndexingMap(
-      launch_dimensions(), config_.unroll_factor, scatter_update_shape, ctx);
+      launch_dimensions(), /*unroll_factor=*/1, scatter_update_shape, ctx);
 
   // For scatter indices we project indexing for scatter updates and take the
   // first result of the affine map only, because they coincide.
@@ -133,8 +144,9 @@ std::optional<IndexingMap> MlirScatterFusion::ComputeThreadIdToInputIndexing(
 LaunchDimensions MlirScatterFusion::launch_dimensions() const {
   const auto& scatter = analysis_.fusion_hero(0).instruction();
   // Compute thread id mapping based on the shape of update operand.
-  auto& shape = scatter.operands().back()->shape();
-  return CalculateLaunchDimensions(shape, analysis_.device_info());
+  auto& scatter_update_shape = scatter.operands().back()->shape();
+  return CalculateLaunchDimensions(scatter_update_shape,
+                                   analysis_.device_info());
 }
 
 std::vector<mlir_converter::EpilogueSpecification>
@@ -227,11 +239,10 @@ absl::Status MlirScatterFusion::EmitEntryFunction(
           auto index = ProvideParameter(
               root_computation, scatter, kScatterIndicesIndex,
               indices_tensor_indices, call_targets, entry_function, b)[0];
-          auto index_ty = mlir::cast<mlir::IntegerType>(index.getType());
-          if (index_ty.isUnsigned()) {
-            auto int_ty = b.getIntegerType(index_ty.getWidth());
-            index = b.create<mlir::UnrealizedConversionCastOp>(int_ty, index)
-                        .getResult(0);
+          if (primitive_util::IsUnsignedIntegralType(
+                  scatter->operand(kScatterIndicesIndex)
+                      ->shape()
+                      .element_type())) {
             index = b.create<ma::IndexCastUIOp>(b.getIndexType(), index);
           } else {
             index = b.create<ma::IndexCastOp>(b.getIndexType(), index);

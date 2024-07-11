@@ -39,7 +39,7 @@ limitations under the License.
 #include "xla/stream_executor/plugin_registry.h"
 #include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/stream_executor/stream_executor_interface.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
 
@@ -258,17 +258,6 @@ absl::Status CUDAFftPlan::Initialize(
   return absl::OkStatus();
 }
 
-absl::Status CUDAFftPlan::Initialize(GpuExecutor *parent, Stream *stream,
-                                     int rank, uint64_t *elem_count,
-                                     fft::Type type,
-                                     ScratchAllocator *scratch_allocator) {
-  return Initialize(parent_, stream, rank, elem_count,
-                    /*input_embed=*/nullptr, /*input_stride=*/0,
-                    /*input_distance=*/0,
-                    /*output_embed=*/nullptr, /*output_stride=*/0,
-                    /*output_distance=*/0, type, 1, scratch_allocator);
-}
-
 absl::Status CUDAFftPlan::UpdateScratchAllocator(
     Stream *stream, ScratchAllocator *scratch_allocator) {
   scratch_allocator_ = scratch_allocator;
@@ -470,7 +459,7 @@ void initialize_cufft() {
   absl::Status status =
       PluginRegistry::Instance()->RegisterFactory<PluginRegistry::FftFactory>(
           cuda::kCudaPlatformId, "cuFFT",
-          [](StreamExecutorInterface *parent) -> fft::FftSupport * {
+          [](StreamExecutor *parent) -> fft::FftSupport * {
             gpu::GpuExecutor *cuda_executor =
                 dynamic_cast<gpu::GpuExecutor *>(parent);
             if (cuda_executor == nullptr) {

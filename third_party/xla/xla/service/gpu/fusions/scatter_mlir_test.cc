@@ -38,8 +38,9 @@ TEST_F(MlirScatterFusionTest, ThreadIdIndexing) {
       %p1 = f32[] parameter(1)
       %p2 = f32[] parameter(2)
       %p3 = f32[] parameter(3)
-      ROOT %tuple = (f32[], f32[]) tuple(f32[] %p2, f32[] %p3)
+      ROOT %tuple = (f32[], f32[]) tuple(f32[] %p0, f32[] %p1)
     }
+
     scatter {
       %operand0 = f32[300,200] parameter(0)
       %operand1 = f32[300,200] parameter(1)
@@ -81,19 +82,20 @@ TEST_F(MlirScatterFusionTest, ThreadIdIndexing) {
 
   constexpr auto kUpdatesIndexing = R"(
     (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id] -> (
-    ((bl_x * 16 + th_x floordiv 8) floordiv 25) mod 42,
-    ((bl_x * 32 + th_x floordiv 4) floordiv 5) mod 10,
-    (bl_x * 128 + th_x) mod 20)
+      ((bl_x * 128 + th_x) floordiv 200) mod 42,
+      ((bl_x * 128 + th_x) floordiv 20) mod 10,
+      (bl_x * 128 + th_x) mod 20
+    )
     domain:
-    th_x in [0, 127]
-    th_y in [0, 0]
-    th_z in [0, 0]
-    bl_x in [0, 65]
-    bl_y in [0, 0]
-    bl_z in [0, 0]
-    chunk_id in [0, 0]
-    unroll_id in [0, 0]
-    th_x + bl_x * 128 in [0, 8399]
+    th_x in [0, 128)
+    th_y in [0, 1)
+    th_z in [0, 1)
+    bl_x in [0, 66)
+    bl_y in [0, 1)
+    bl_z in [0, 1)
+    chunk_id in [0, 1)
+    unroll_id in [0, 1)
+    th_x + bl_x * 128 in [0, 8400)
   )";
   EXPECT_THAT(
       fusion
@@ -121,19 +123,19 @@ TEST_F(MlirScatterFusionTest, ThreadIdIndexing) {
       MatchIndexingString(kUpdatesIndexing));
 
   constexpr auto kIndicesIndexing = R"(
-    (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id, index_id] -> (
-    ((bl_x * 16 + th_x floordiv 8) floordiv 25) mod 42, 0)
+    (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id, index_id] ->
+      (((bl_x * 128 + th_x) floordiv 200) mod 42, 0)
     domain:
-    th_x in [0, 127]
-    th_y in [0, 0]
-    th_z in [0, 0]
-    bl_x in [0, 65]
-    bl_y in [0, 0]
-    bl_z in [0, 0]
-    chunk_id in [0, 0]
-    unroll_id in [0, 0]
-    index_id in [0, 0]
-    th_x + bl_x * 128 in [0, 8399]
+    th_x in [0, 128)
+    th_y in [0, 1)
+    th_z in [0, 1)
+    bl_x in [0, 66)
+    bl_y in [0, 1)
+    bl_z in [0, 1)
+    chunk_id in [0, 1)
+    unroll_id in [0, 1)
+    index_id in [0, 1)
+    th_x + bl_x * 128 in [0, 8400)
   )";
   EXPECT_THAT(
       fusion
@@ -257,8 +259,7 @@ TEST_F(MlirScatterFusionTest, Scatter_Unsigned) {
   TF_ASSERT_OK(EmitAndCheckIR(kHloString, R"(
     // CHECK: func.func @fused_computation(
     // CHECK: %[[PARAM:.*]] = xla_gpu.pure_call @scatter_indices
-    // CHECK: %[[CVT:.*]] = builtin.unrealized_conversion_cast %[[PARAM]]
-    // CHECK: %[[INDEX:.*]] = arith.index_castui %[[CVT]]
+    // CHECK: %[[INDEX:.*]] = arith.index_castui %[[PARAM]]
     // CHECK: arith.cmpi ule, %[[INDEX]]
   )"));
   EXPECT_TRUE(RunAndCompareNoHloPasses(kHloString, ErrorSpec{1e-3}));
@@ -376,6 +377,42 @@ TEST_F(MlirScatterFusionTest, Scatter_Overwrite) {
     // CHECK: }
   )"));
   EXPECT_TRUE(RunAndCompareNoHloPasses(kHloString, ErrorSpec{1e-3}));
+}
+
+TEST_F(MlirScatterFusionTest, Scatter_UnrollFactor) {
+  auto kHloString = R"(
+    HloModule module
+
+    sum {
+      lhs = f32[] parameter(0)
+      rhs = f32[] parameter(1)
+      ROOT add = f32[] add(lhs, rhs)
+    }
+
+    scatter {
+      p0 = f32[4000,4,9] parameter(0)
+      p1 = s32[1400000,1] parameter(1)
+      p2 = f32[1400000,1,4,9] parameter(2)
+      ROOT scatter = f32[4000,4,9] scatter(p0, p1, p2),
+        update_window_dims={1,2,3},
+        inserted_window_dims={},
+        scatter_dims_to_operand_dims={0},
+        index_vector_dim=1,
+        to_apply=sum
+    }
+    ENTRY entry {
+      p0 = f32[4000,4,9] parameter(0)
+      p1 = s32[1400000,1] parameter(1)
+      p2 = f32[1400000,1,4,9] parameter(2)
+      ROOT %fusion = f32[4000,4,9] fusion(
+        p0, p1, p2), kind=kLoop, calls=scatter
+    }
+  )";
+  TF_ASSERT_OK(EmitAndCheckIR(kHloString, R"(
+    // CHECK-LABEL: func.func @fused_computation
+    // CHECK-NOT: scf.for
+    // CHECK: xla_gpu.atomic_rmw
+  )"));
 }
 
 }  // namespace
