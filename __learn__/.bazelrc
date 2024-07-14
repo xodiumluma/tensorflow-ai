@@ -579,3 +579,23 @@ try-import %workspace%/xla_configure.bazelrc
 
 # User config
 try-import %workspace%/.bazelrc.user
+
+# BUILD TF2
+test:release_base --test_size_filters=small,medium
+
+# support all targets
+build:release_base --config=cpu_cross
+
+# check that the release_base is configured on linux
+build:release_linux_base --config=release_base
+
+# turn off clang extension that rejects type defs inisde offsetof
+# https://reviews.llvm.org/D133574
+# Once upb is updated we can remove this - a type def is used inside offsetof in the current ubp version
+# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183.
+build:release_linux_base --copt=-Wno-gnuoffsetof-extensions
+build:release_linux_base --copt=-Wno-error=array-parameter
+build:release_linux_base --copt=-Wno-error=unused-command-line-argument
+# lld is the linker
+build:release_linux_base --linkopt="-fuse-ld=lld"
+build:release_linux_base --linkopt="-lm"
