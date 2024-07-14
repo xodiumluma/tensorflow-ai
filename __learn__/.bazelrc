@@ -589,7 +589,7 @@ build:release_base --config=cpu_cross
 # check that the release_base is configured on linux
 build:release_linux_base --config=release_base
 
-# turn off clang extension that rejects type defs inisde offsetof
+# turn off clang extension that rejects type defs inside offsetof
 # https://reviews.llvm.org/D133574
 # Once upb is updated we can remove this - a type def is used inside offsetof in the current ubp version
 # https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183.
@@ -599,3 +599,20 @@ build:release_linux_base --copt=-Wno-error=unused-command-line-argument
 # lld is the linker
 build:release_linux_base --linkopt="-fuse-ld=lld"
 build:release_linux_base --linkopt="-lm"
+
+# disable this check as we have invalid linker scripts in the build
+build:release_linux_base --linkopt=-Wl,--undefined-version
+
+# CONTAINER STUFF
+# Use python3 from container image
+build:release_linux_base --action_env PYTHON_BIN_PATH="/usr/bin/python3"
+build:release_linux_base --action_env PYTHON_LIB_PATH="/usr/lib/tf_python"
+build:release_linux_base --python_path="/usr/bin/python3"
+# specify clang as compiler - use clang path in the container
+build:release_cpu_linux_base --repo_env=CC="/usr/lib/llvm-18/bin/clang"
+build:release_cpu_linux_base --repo_env=BAZEL_COMPILER="/usr/lib/llvm-18/bin/clang"
+# test config
+test:release_linux_base --build_tests_only --keep_going --test_output=errors --verbose_failures=true
+test:release_linux_base --local_test_jobs=HOST_CPUS
+test:release_linux_base --test_env=LD_LIBRARY_PATH
+test:release_linux_base --test_summary=short 
