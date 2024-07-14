@@ -49,15 +49,12 @@
 # Remote build execution configuration - works only with TF team projects
 #   rbe_base:                   For all OSes use general RBE options
 #   rbe_linux:                  For all Linux builds, use general RBE options
-#   rbe_win:                    For all Windows builds, use general RBE options
+#   rbe_win_base:               For all Windows builds, use general RBE options; don't use standalone
+#   rbe_win_clang:							For Clang compilation on Windows
 #
 #   rbe_linux_cpu:              RBE configuration - build with CPU only
 #   rbe_linux_cuda:             RBE configuration - build with GPU support via clang
 #   rbe_linux_cuda_nvcc:        RBE configuration - build with GPU support via nvcc
-#
-#   rbe_win_py39:               Configure Windows Python 3.9 RBE
-#
-#   tensorflow_testing_rbe_win: Windows RBE configuration for tensorflow-testing project
 #
 # Embedded Linux configuration (experimental - only tested with TFLite build for now)
 #   elinux:                     For all OSes use General Embedded Linux configuration
