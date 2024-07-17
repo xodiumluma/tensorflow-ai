@@ -334,6 +334,7 @@ cc_library(
         "//xla/pjrt:pjrt_executable",
         "//xla/pjrt:pjrt_layout",
         "//xla/python/ifrt",
+        "//xla/python/ifrt:attribute_map",
         "//xla/python/ifrt:sharding_serdes",
         "//xla/python/ifrt_proxy/common:ifrt_service_proto_cc",
         "//xla/python/ifrt_proxy/common:types",
@@ -520,7 +521,6 @@ cc_library(
     deps = [
         ":grpc_client",
         ":registry",
-        "//third_party/nanobind",
         "//xla/pjrt:status_casters",
         "//xla/python:nb_class_ptr",
         "//xla/python:py_client",
@@ -534,5 +534,6 @@ cc_library(
         "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:statusor",
+        "@nanobind",
     ],
 )

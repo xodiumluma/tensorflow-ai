@@ -31,7 +31,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
-#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "unsupported/Eigen/CXX11/Tensor"
 #include "xla/runtime/buffer_use.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/cpu/runtime/buffer_allocations.h"
@@ -580,7 +580,11 @@ static void BM_AsyncThunkExecutor(benchmark::State& state) {
   BENCHMARK(name)                      \
       ->MeasureProcessCPUTime()        \
       ->Arg(1)                         \
+      ->Arg(2)                         \
+      ->Arg(4)                         \
+      ->Arg(8)                         \
       ->Arg(16)                        \
+      ->Arg(32)                        \
       ->Arg(64)                        \
       ->Arg(128)                       \
       ->Arg(256)                       \
