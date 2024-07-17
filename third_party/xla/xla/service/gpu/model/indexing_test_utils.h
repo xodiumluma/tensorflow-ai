@@ -27,9 +27,9 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "mlir/IR/AffineExpr.h"  // from @llvm-project
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/gpu/model/indexing_analysis.h"
 #include "xla/service/gpu/model/indexing_map.h"
@@ -111,6 +111,15 @@ absl::Status EnumerateDomain(
 // shape.
 absl::Status VerifyBijection(const IndexingMap& indexing_map,
                              absl::Span<Interval const> expected_codomain);
+
+// Checks that two affine expressions map to the same values for all points in
+// their domain. If `reference` is undefined at a point, the value of `other` is
+// ignored. If `other` is undefined at a point, but `reference` is not, this is
+// a failure.
+absl::Status VerifyExprsAreIdentical(
+    mlir::AffineExpr reference, mlir::AffineExpr other,
+    absl::Span<Interval const> dimension_ranges,
+    absl::Span<Interval const> symbol_ranges);
 
 // Returns the trip counts for each symbol in the indexing map.
 std::vector<int64_t> GetLoopTripCounts(const IndexingMap& indexing_map);

@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "xla/hlo/experimental/auto_sharding/auto_sharding.pb.h"
 #include "xla/hlo/experimental/auto_sharding/auto_sharding_strategy.h"
+#include "tsl/platform/test.h"
 
 namespace xla {
 namespace spmd {
@@ -844,6 +845,25 @@ TEST(ScaleRequest, SkipsScaling) {
   AddCosts(expected_request.mutable_resharding_costs(), expected_r);
   expected_request.mutable_coeff_limit()->set_coeff(1e7);
   EXPECT_THAT(request, ::testing::EqualsProto(expected_request));
+}
+
+TEST(StableHashMap, IterationOrderDeterminism){
+  StableHashMap<int, int> map;
+  std::vector<int> insertion_order = {6, 3, 1, 2, 4, 5, 10, 0, 7, 9, 8};
+  for (int key : insertion_order) {
+    map[key] = key;
+  }
+
+  std::vector<int> iteration_order;
+  for (const auto& [key, value] : map) {
+    iteration_order.push_back(key);
+  }
+  if (tsl::testing::kIsOpenSource) {
+    EXPECT_THAT(iteration_order,
+                ::testing::ElementsAre(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10));
+  } else {
+    EXPECT_EQ(iteration_order, insertion_order);
+  }
 }
 
 TEST(ValidateRequest, AcceptsAutoShardingSolverRequest) {
