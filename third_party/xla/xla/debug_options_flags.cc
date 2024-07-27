@@ -144,7 +144,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_enable_dumping(true);
 
   opts.set_xla_gpu_enable_custom_fusions(false);
-  opts.set_xla_gpu_enable_address_computation_fusion(false);
+  opts.set_xla_gpu_enable_address_computation_fusion(true);
   opts.set_xla_gpu_nccl_termination_timeout_seconds(-1);
   opts.set_xla_gpu_enable_shared_constants(true);
   opts.set_xla_gpu_enable_nccl_user_buffers(false);
@@ -171,7 +171,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_enable_pipelined_reduce_scatter(false);
   opts.set_xla_gpu_enable_pipelined_p2p(false);
 
-  opts.set_xla_gpu_run_post_layout_collective_pipeliner(true);
+  opts.set_xla_gpu_run_post_layout_collective_pipeliner(false);
 
   opts.set_xla_gpu_collective_permute_decomposer_threshold(
       std::numeric_limits<int64_t>::max());
@@ -246,7 +246,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_nccl_p2p_max_nchannels(0);
 
 #if GOOGLE_CUDA
-  opts.set_xla_gpu_mlir_emitter_level(2);
+  opts.set_xla_gpu_mlir_emitter_level(3);
 #else
   opts.set_xla_gpu_mlir_emitter_level(0);
 #endif
@@ -273,9 +273,15 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
 
   opts.set_xla_use_shardy(false);
 
-  opts.set_xla_gpu_shard_autotuning(false);
+  opts.set_xla_gpu_shard_autotuning(true);
+
+  opts.set_xla_syntax_sugar_async_ops(false);
 
   opts.set_xla_gpu_per_fusion_autotune_cache_dir("");
+
+  opts.set_xla_gpu_autotune_gemm_rtol(0.1f);
+
+  opts.set_xla_enable_command_buffers_during_profiling(false);
 
   return opts;
 }
@@ -833,13 +839,24 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       int32_setter_for(&DebugOptions::set_xla_gpu_autotune_level),
       debug_options->xla_gpu_autotune_level(),
       "Set GEMM and Convolution auto-tuning level. 0 = off; 1 = on; 2 = "
-      "on+init; 3 = on+init+reinit; 4 = on+init+reinit+check."));
+      "on+init; 3 = on+init+reinit; 4 = on+init+reinit+check; "
+      "5 = on+init+reinit+check and skip WRONG_RESULT solutions. See also "
+      "the related flag xla_gpu_autotune_gemm_rtol. Remark that, setting the "
+      "level to 5 only makes sense if you are sure that the reference (first "
+      "in the list) solution is numerically CORRECT. Otherwise, the autotuner "
+      "might discard many other correct solutions based on the failed "
+      "BufferComparator test."));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_autotune_max_solutions",
       int64_setter_for(&DebugOptions::set_xla_gpu_autotune_max_solutions),
       debug_options->xla_gpu_autotune_max_solutions(),
       "Maximal number of GEMM solutions to consider for autotuning: 0 means "
       "consider all solutions returned by the GEMM library."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_autotune_gemm_rtol",
+      float_setter_for(&DebugOptions::set_xla_gpu_autotune_gemm_rtol),
+      debug_options->xla_gpu_autotune_gemm_rtol(),
+      "Relative precision for comparing GEMM solutions vs the reference one"));
   flag_list->push_back(tsl::Flag(
       "xla_force_host_platform_device_count",
       int32_setter_for(&DebugOptions::set_xla_force_host_platform_device_count),
@@ -1790,6 +1807,11 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "Shard autotuning between participating compiler processes (typically in "
       "multi-host setups) and join the results when it's done."));
   flag_list->push_back(
+      tsl::Flag("xla_syntax_sugar_async_ops",
+                bool_setter_for(&DebugOptions::set_xla_syntax_sugar_async_ops),
+                debug_options->xla_syntax_sugar_async_ops(),
+                "Enable syntax sugar for async ops in HLO dumps."));
+  flag_list->push_back(
       tsl::Flag("xla_gpu_kernel_cache_file",
                 string_setter_for(&DebugOptions::set_xla_gpu_kernel_cache_file),
                 debug_options->xla_gpu_kernel_cache_file(),
@@ -1810,6 +1832,14 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       "version checks must be done by the user (e.g. if you want to use "
       "separate caches for different versions of XLA, please use different "
       "directories). Default: no cache."));
+  flag_list->push_back(tsl::Flag(
+      "xla_enable_command_buffers_during_profiling",
+      bool_setter_for(
+          &DebugOptions::set_xla_enable_command_buffers_during_profiling),
+      debug_options->xla_enable_command_buffers_during_profiling(),
+      "Experimental: Enable command buffers while a profiling active. "
+      "By default, enabling profiling switches from command buffers to "
+      "op-by-op mode."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more

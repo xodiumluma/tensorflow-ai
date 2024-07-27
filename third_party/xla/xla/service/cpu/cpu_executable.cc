@@ -82,7 +82,7 @@ FunctionRegistry::FunctionRegistry(SimpleOrcJIT* jit) : jit_(jit) {}
 
 absl::StatusOr<FunctionRegistry::Kernel> FunctionRegistry::FindKernel(
     std::string_view name) {
-  VLOG(2) << "Find host kernel with a name " << name;
+  VLOG(3) << "Find host kernel with a name " << name;
 
   llvm::Expected<llvm::orc::ExecutorSymbolDef> sym =
       jit_->FindCompiledSymbol(std::string(name));
@@ -92,6 +92,20 @@ absl::StatusOr<FunctionRegistry::Kernel> FunctionRegistry::FindKernel(
                      " in the jit compiled module."));
   }
   return reinterpret_cast<Kernel>(sym->getAddress().getValue());
+}
+
+absl::StatusOr<FunctionRegistry::Comparator> FunctionRegistry::FindComparator(
+    std::string_view name) {
+  VLOG(3) << "Find comparator with a name " << name;
+
+  llvm::Expected<llvm::orc::ExecutorSymbolDef> sym =
+      jit_->FindCompiledSymbol(std::string(name));
+  if (!sym) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Can't resolve comparator with a name ", name,
+                     " in the jit compiled module."));
+  }
+  return reinterpret_cast<Comparator>(sym->getAddress().getValue());
 }
 
 se::DeviceMemoryBase ConstantAllocation::AsDeviceMemoryBase() const {
@@ -133,7 +147,7 @@ absl::StatusOr<std::unique_ptr<CpuExecutable>> CpuExecutable::Create(
   // We expect to find the symbol provided with entry_function_name; otherwise
   // this is an internal error.
   if (!sym) {
-    return absl::InvalidArgumentError(
+    return absl::NotFoundError(
         absl::StrCat("Symbol ", entry_function_name, " not found."));
   }
   // getAddress can do work under the hood in the jit, so it needs to be
@@ -373,7 +387,8 @@ absl::Status CpuExecutable::ExecuteThunks(
   Thunk::ExecuteParams execute_params = {
       &*function_registry_,
       &allocations,
-      runtime::GetXfeedManager(run_options->device_ordinal()),
+      runtime::GetXfeedManager(
+          run_options->stream()->parent()->device_ordinal()),
       run_options->intra_op_thread_pool(),
       &task_runner,
       &collective_execute_params,
