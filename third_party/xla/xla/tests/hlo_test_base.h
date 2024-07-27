@@ -65,7 +65,7 @@ namespace xla {
 //      "gpu",
 //    ],
 //    deps = [
-//      "//tensorflow/compiler/xla/tests:hlo_test_base",
+//      "//xla/tests:hlo_test_base",
 //      ...
 //    ],
 //  )
@@ -206,7 +206,8 @@ class HloTestBase : public ManifestCheckingTest {
 
   // Executes the given module and return the result as a Literal.
   absl::StatusOr<Literal> Execute(std::unique_ptr<HloModule> module,
-                                  absl::Span<Literal* const> arguments);
+                                  absl::Span<Literal* const> arguments,
+                                  bool run_hlo_passes = true);
 
   // Same as above, except the module will be executed without running any HLO
   // passes on it.
@@ -244,6 +245,13 @@ class HloTestBase : public ManifestCheckingTest {
       std::function<const Literal*(int64_t, int64_t)> argument_provider,
       int64_t num_replicas, bool run_hlo_passes,
       DeviceAssignment* device_assignment = nullptr);
+
+  // Convenience function for above. Allows passing different inputs to
+  // different replicas of the same program.
+  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
+      std::unique_ptr<HloModule> module,
+      std::vector<std::vector<Literal*>> arguments, int64_t num_replicas,
+      bool run_hlo_passes);
 
   // Executes the given hlo module on two backends and compares results.
   //

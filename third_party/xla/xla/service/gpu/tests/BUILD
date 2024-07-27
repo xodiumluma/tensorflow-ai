@@ -403,6 +403,7 @@ xla_test(
         "//xla/hlo/ir:hlo",
         "//xla/tests:hlo_test_base",
         "//xla/tests:verified_hlo_module",
+        "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test_main",
     ],
@@ -856,8 +857,8 @@ lit_test_suite(
 #     name = "xla-opt",
 #     srcs = ["xla-opt.cc"],
 #     deps = [
-#         "//xla/service/gpu:prevent_mmav3_loop_unrolling",
-#         "//xla/service/gpu:triton_sparse_extensions",
+#         "//xla/service/gpu/fusions/triton:prevent_mmav3_loop_unrolling",
+#         "//xla/service/gpu/fusions/triton:sparse_extensions",
 #         "@llvm-project//mlir:AllExtensions",
 #         "@llvm-project//mlir:MlirOptLib",
 #         "@triton//:AllPassesAndDialects",
