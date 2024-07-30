@@ -65,6 +65,8 @@ filegroup(
     ]),
 )
 
+exports_files(srcs = ["gpu_compiler_test_autotune_db.textproto"])
+
 tf_proto_library(
     name = "backend_configs",
     srcs = ["backend_configs.proto"],
@@ -784,18 +786,14 @@ cc_library(
         "//xla/hlo/ir:backend_config",
         "//xla/hlo/ir:hlo",
         "//xla/service:buffer_assignment",
-        "//xla/service:hlo_parser",
-        "//xla/service/llvm_ir:buffer_assignment_util",
         "//xla/service/llvm_ir:llvm_type_conversion_util",
         "//xla/service/llvm_ir:llvm_util",
-        "//xla/translate/mhlo_to_hlo:location_exporter",
-        "//xla/translate/mhlo_to_hlo:type_to_shape",
+        "//xla/stream_executor:device_description",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -803,7 +801,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
         "@local_tsl//tsl/lib/strings:proto_serialization",
-        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:statusor",
     ],
 )
@@ -817,10 +815,10 @@ xla_cc_test(
         ":ir_emission_utils",
         "//xla:literal",
         "//xla:literal_util",
+        "//xla:shape_util",
         "//xla:types",
         "//xla:util",
         "//xla/hlo/ir:backend_config",
-        "//xla/hlo/ir:hlo",
         "//xla/service:buffer_assignment",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
@@ -4241,7 +4239,6 @@ cc_library(
         "//xla/stream_executor",
         "//xla/stream_executor:data_type",
         "//xla/stream_executor:dnn",
-        "//xla/stream_executor:kernel_factory",
         "//xla/stream_executor:kernel_spec",
         "//xla/stream_executor:launch_dim",
         "//xla/stream_executor:typed_kernel_factory",
