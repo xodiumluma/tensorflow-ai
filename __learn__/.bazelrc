@@ -41,9 +41,7 @@
 #   rocm:                       Build AMD GPU-supported TF (rocm)
 #   mkl:                        Turn on full mkl support
 #   tensorrt:                   Turn on Tensorrt
-#   noaws:                      Don't rely on AWS S3 storage
 #   nogcp:                      Don't rely on GCP
-#   nohdfs:                     No hadoop hdfs for you
 #   nonccl:                     No nccl
 #
 # Remote build execution configuration - works only with TF team projects
@@ -111,10 +109,6 @@ build --config=short_logs
 
 # Document or remove
 build --config=v2
-
-# Turn off AWS/HDFS support
-build --define=no_aws_support=true
-build --define=no_hdfs_support=true
 
 # we need the experimental flag as TF has now `cc_shared_library` targets
 # Delete it when `cc_shared_library` is turned on by default
@@ -287,9 +281,7 @@ build:sycl --define=tensorflow_mkldnn_contraction_kernel=0
 build:sycl --repo_env TF_NEED_SYCL=1
 
 # disable unnecessary features
-build:noaws --define=no_aws_support=true
 build:nogcp --define=no_gcp_support=true
-build:nohdfs --define=no_hdfs_support=true
 build:nonccl --define=no_nccl_support=true
 
 # build TF modularly
@@ -331,7 +323,6 @@ build:linux_arm64 --copt="-mtune=generic" --copt="-march=armv8-a" --copt="-O3"
 
 # for Windows MSVC `__cpluscplus` needs this switch to get it right
 # https://devblogs.microsoft.com/cppblog/msvc-now-correctly-reports-__cpluscplus/
-
 build:windows --copt=/Zc:__cplusplus
 build:windows --host_copt=/Zc:__cplusplus
 
@@ -448,7 +439,6 @@ build:win_clang_xla --compiler=clang-cl
 build:win_clang_xla --linkopt=/FORCE:MULTIPLE
 build:win_clang_xla --host_linkopt=/FORCE:MULTIPLE
 test:win_clang_xla --action_env=PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PY;.PYW
-
 test:win_clang_xla --linkopt=/FORCE:MULTIPLE
 test:win_clang_xla --host_linkopt=/FORCE:MULTIPLE
 
