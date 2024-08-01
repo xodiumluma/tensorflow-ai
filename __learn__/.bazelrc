@@ -502,7 +502,7 @@ build:rbe_linux_cpu --platforms="@sigbuild-r2.17-clang_config_platform//:platfor
 build:rbe_linux_cpu --copt=-Wno-error=unused-command-line-argument
 # This below was added in clang-16, see https://reviews.llvm.org/D133574 
 # Once upb is updated, this can be removed - a type definition is used in offset of in current version of upb 
-# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L83.
+# https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183.
 build:rbe_linux_cpu --copt=-Wno-gnu-offsetof-extensions
 # as the Python binary is the same the config is also the same for all containers
 build:rbe_linux_cpu --repo_env=TF_PYTHON_CONFIG_REPO="@sigbuild-r2.17-clang_config_python"
@@ -585,7 +585,7 @@ build:release_linux_base --config=release_base
 # https://reviews.llvm.org/D133574
 # Once upb is updated we can remove this - a type def is used inside offsetof in the current ubp version
 # https://github.com/protocolbuffers/upb/blob/9effcbcb27f0a665f9f345030188c0b291e32482/upb/upb.c#L183.
-build:release_linux_base --copt=-Wno-gnuoffsetof-extensions
+build:release_linux_base --copt=-Wno-gnu-offsetof-extensions
 build:release_linux_base --copt=-Wno-error=array-parameter
 build:release_linux_base --copt=-Wno-error=unused-command-line-argument
 # lld is the linker
@@ -608,3 +608,17 @@ test:release_linux_base --build_tests_only --keep_going --test_output=errors --v
 test:release_linux_base --local_test_jobs=HOST_CPUS
 test:release_linux_base --test_env=LD_LIBRARY_PATH
 test:release_linux_base --test_summary=short 
+
+# Clang compiler toolchain
+build:release_cpu_linux --config=release_linux_base
+build:release_cpu_linux --crosstool_top="@sigbuild-r2.17-clang_config_cuda//crosstool:toolchain"
+# AVX instruction set
+build:release_cpu_linux --config=avx_linux
+
+build:release_gpu_linux --conifg=release_cpu_linux
+# configure compilation CUDA version and paths + utilise CUDA Clang toolchain
+# Linux cpu and CUDA builds descend on a common toolchain
+build:release_gpu_linux --config=cuda_clang_official
+test:release_gpu_linux --test_env=LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
+# local test jobs has to be 4 - parallel_gpu_execute is flaky so this works for now
+test:release_gpu_linux --test_timeout=300,450,1200,3600 --local_test_jobs=4 --run_under=//tensorflow/tools/ci_build/gpu_build:parallel_gpu_execute
