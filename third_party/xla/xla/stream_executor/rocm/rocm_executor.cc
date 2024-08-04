@@ -284,10 +284,10 @@ absl::StatusOr<std::unique_ptr<Kernel>> GpuExecutor::LoadKernel(
     TF_ASSIGN_OR_RETURN(
         GpuFunctionHandle function,
         GpuRuntime::GetFuncBySymbol(spec.in_process_symbol().symbol()));
-    *rocm_kernel->gpu_function_ptr() = function;
+    rocm_kernel->set_gpu_function(function);
 #else
-    *rocm_kernel->gpu_function_ptr() =
-        static_cast<hipFunction_t>(spec.in_process_symbol().symbol());
+    rocm_kernel->set_gpu_function(
+        static_cast<hipFunction_t>(spec.in_process_symbol().symbol()));
 #endif  // TF_ROCM_VERSION >= 60200
 
   } else {
@@ -298,9 +298,10 @@ absl::StatusOr<std::unique_ptr<Kernel>> GpuExecutor::LoadKernel(
   // from a module, as ROCm runtime did that automatically for us.
   if (!spec.has_in_process_symbol()) {
     VLOG(2) << "getting function " << *kernel_name << " from module " << module;
-    TF_RETURN_IF_ERROR(
-        GpuDriver::GetModuleFunction(context_, module, kernel_name->c_str(),
-                                     rocm_kernel->gpu_function_ptr()));
+    GpuFunctionHandle function;
+    TF_RETURN_IF_ERROR(GpuDriver::GetModuleFunction(
+        context_, module, kernel_name->c_str(), &function));
+    rocm_kernel->set_gpu_function(function);
   }
 
   // We have to trust the kernel loader spec arity because there doesn't appear
@@ -322,12 +323,12 @@ absl::Status GpuExecutor::GetKernelMetadata(GpuKernel* rocm_kernel,
                                             KernelMetadata* kernel_metadata) {
   int value = 0;
   TF_RETURN_IF_ERROR(GpuDriver::FuncGetAttribute(
-      HIP_FUNC_ATTRIBUTE_NUM_REGS, *rocm_kernel->gpu_function_ptr(), &value));
+      HIP_FUNC_ATTRIBUTE_NUM_REGS, rocm_kernel->gpu_function(), &value));
   kernel_metadata->set_registers_per_thread(value);
 
   TF_RETURN_IF_ERROR(
       GpuDriver::FuncGetAttribute(HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES,
-                                  *rocm_kernel->gpu_function_ptr(), &value));
+                                  rocm_kernel->gpu_function(), &value));
   kernel_metadata->set_shared_memory_bytes(value);
   return absl::OkStatus();
 }
@@ -337,7 +338,7 @@ absl::Status GpuExecutor::Launch(Stream* stream, const ThreadDim& thread_dims,
                                  const Kernel& kernel, const KernelArgs& args) {
   GpuStreamHandle hipstream = AsGpuStreamValue(stream);
   const GpuKernel* rocm_kernel = AsGpuKernel(&kernel);
-  hipFunction_t hipfunc = rocm_kernel->AsGpuFunctionHandle();
+  hipFunction_t hipfunc = rocm_kernel->gpu_function();
 
   if (rocm_kernel->cache_config() != KernelCacheConfig::kNoPreference) {
     TF_RETURN_IF_ERROR(GpuDriver::FuncSetCacheConfig(
@@ -446,20 +447,6 @@ void GpuExecutor::Deallocate(DeviceMemoryBase* mem) {
   GpuDriver::DeviceDeallocate(context_, mem->opaque());
 }
 
-absl::StatusOr<std::unique_ptr<MemoryAllocation>>
-GpuExecutor::HostMemoryAllocate(uint64_t size) {
-  auto* buffer = GpuDriver::HostAllocate(context_, size);
-  if (buffer == nullptr && size > 0) {
-    return absl::InternalError(
-        absl::StrFormat("Failed to allocate HostMemory of size %d", size));
-  }
-  return std::make_unique<HostMemoryAllocation>(buffer, size, this);
-}
-
-void GpuExecutor::HostMemoryDeallocate(void* location, uint64_t size) {
-  return GpuDriver::HostDeallocate(context_, location);
-}
-
 bool GpuExecutor::SynchronizeAllActivity() {
   return GpuDriver::SynchronizeContext(context_);
 }
@@ -489,16 +476,6 @@ absl::Status GpuExecutor::SynchronousMemcpy(void* host_dst,
                                          AsROCmDevicePtr(gpu_src), size);
 }
 
-absl::Status GpuExecutor::Memset(Stream* stream, DeviceMemoryBase* location,
-                                 uint8 pattern, uint64_t size) {
-  VLOG(2) << "enqueueing memset8 operation onto stream " << stream
-          << " at location " << location << " with size " << size
-          << " and pattern " << std::hex << pattern;
-  return GpuDriver::AsynchronousMemsetUint8(context_, AsROCmDevicePtr(location),
-                                            pattern, size,
-                                            AsGpuStreamValue(stream));
-}
-
 void GpuExecutor::DeallocateStream(Stream* stream) {
   {
     absl::MutexLock lock(&mu_);
@@ -508,11 +485,7 @@ void GpuExecutor::DeallocateStream(Stream* stream) {
   }
   GpuStream* rocm_stream = AsGpuStream(stream);
   absl::MutexLock l(&alive_gpu_streams_mu_);
-  alive_gpu_streams_.erase(rocm_stream->platform_specific_stream());
-  if (!rocm_stream->IsIdle()) {
-    LOG(ERROR) << "Deallocating stream with pending work";
-  }
-  rocm_stream->Destroy();
+  alive_gpu_streams_.erase(rocm_stream->gpu_stream());
 }
 
 absl::Status GpuExecutor::BlockHostUntilDone(Stream* stream) {
@@ -651,23 +624,13 @@ absl::StatusOr<std::unique_ptr<Event>> GpuExecutor::CreateEvent() {
 
 absl::StatusOr<std::unique_ptr<Stream>> GpuExecutor::CreateStream(
     std::optional<std::variant<StreamPriority, int>> priority) {
-  auto gpu_stream = std::make_unique<GpuStream>(this);
-  if (priority.has_value()) {
-    if (std::holds_alternative<StreamPriority>(*priority)) {
-      gpu_stream->SetPriority(std::get<StreamPriority>(*priority));
-    } else {
-      gpu_stream->SetPriority(std::get<int>(*priority));
-    }
-  }
+  TF_ASSIGN_OR_RETURN(auto event, CreateGpuEvent(/*allow_timing=*/false));
+  auto stream = std::make_unique<GpuStream>(this, std::move(event), priority);
   absl::MutexLock l(&alive_gpu_streams_mu_);
-  bool init_worked = gpu_stream->Init();
-  if (init_worked) {
-    auto platform_specific_stream = gpu_stream->platform_specific_stream();
-    alive_gpu_streams_[platform_specific_stream] = gpu_stream.get();
-    return std::move(gpu_stream);
-  } else {
-    return absl::InvalidArgumentError("Failed to initialize GPU stream");
-  }
+  TF_RETURN_IF_ERROR(stream->Init());
+  auto gpu_stream = stream->gpu_stream();
+  alive_gpu_streams_[gpu_stream] = stream.get();
+  return std::move(stream);
 }
 
 absl::StatusOr<std::unique_ptr<CommandBuffer>> GpuExecutor::CreateCommandBuffer(

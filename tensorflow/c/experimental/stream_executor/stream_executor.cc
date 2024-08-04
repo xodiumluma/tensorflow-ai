@@ -230,7 +230,7 @@ class CStreamExecutor : public StreamExecutorCommon {
     return std::make_unique<HostMemoryAllocation>(buffer, size, this);
   }
 
-  void HostMemoryDeallocate(void* mem, uint64_t size) override {
+  void HostMemoryDeallocate(void* mem) override {
     stream_executor_->host_memory_deallocate(&device_, mem);
   }
 
@@ -303,15 +303,6 @@ class CStreamExecutor : public StreamExecutorCommon {
     SP_DeviceMemoryBase device_memory_base = DeviceMemoryBaseToC(&gpu_src);
     stream_executor_->sync_memcpy_dtoh(&device_, host_dst, &device_memory_base,
                                        size, c_status.get());
-    return StatusFromTF_Status(c_status.get());
-  }
-  absl::Status Memset(Stream* stream, DeviceMemoryBase* location, uint8 pattern,
-                      uint64 size) override {
-    OwnedTFStatus c_status(TF_NewStatus());
-    SP_Stream stream_handle = static_cast<CStream*>(stream)->Handle();
-    SP_DeviceMemoryBase device_mem = DeviceMemoryBaseToC(location);
-    stream_executor_->memset(&device_, stream_handle, &device_mem, pattern,
-                             size, c_status.get());
     return StatusFromTF_Status(c_status.get());
   }
   void DeallocateStream(Stream* stream) override {
@@ -441,7 +432,6 @@ CPlatform::CPlatform(SP_Platform platform,
       name_(platform.name) {}
 
 CPlatform::~CPlatform() {
-  executor_cache_.DestroyAllExecutors();
   platform_fns_.destroy_device_fns(&platform_, &device_fns_);
   platform_fns_.destroy_stream_executor(&platform_, &stream_executor_);
   platform_fns_.destroy_timer_fns(&platform_, &timer_fns_);
@@ -466,7 +456,7 @@ absl::StatusOr<StreamExecutor*> CPlatform::ExecutorForDevice(int ordinal) {
 absl::StatusOr<StreamExecutor*> CPlatform::GetExecutor(
     const StreamExecutorConfig& config) {
   return executor_cache_.GetOrCreate(
-      config, [&]() { return GetUncachedExecutor(config); });
+      config.ordinal, [this, config]() { return GetUncachedExecutor(config); });
 }
 absl::StatusOr<std::unique_ptr<StreamExecutor>> CPlatform::GetUncachedExecutor(
     const StreamExecutorConfig& config) {
