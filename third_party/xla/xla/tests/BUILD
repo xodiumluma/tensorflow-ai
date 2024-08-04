@@ -2124,6 +2124,9 @@ xla_test(
 xla_test(
     name = "dynamic_reshape_test",
     srcs = ["dynamic_reshape_test.cc"],
+    backend_tags = {
+        "gpu": ["notsan"],  # TODO(b/345034145): Fix tsan error.
+    },
     disabled_backends = ["interpreter"],
     tags = ["test_xla_cpu_thunks"],
     deps = [
@@ -2311,14 +2314,9 @@ xla_test(
     srcs = ["collective_pipeline_parallelism_test.cc"],
     args = ["--xla_force_host_platform_device_count=4"],
     backend_tags = {
-        # This test is tagged "manual" because it requires multiple GPUs, and Forge only supports
-        # single-GPU tests.  Guitar skips "manual" tests unless they're also tagged "guitar".
         "gpu": [
-            "guitar",
-            "manual",
             "multi_gpu",
             "no_oss",
-            "notap",
         ],
         "cpu": [
             "notsan",
@@ -2357,15 +2355,9 @@ xla_test(
     name = "collective_ops_e2e_test",
     srcs = ["collective_ops_e2e_test.cc"],
     backend_tags = {
-        # This test is tagged "manual" because it requires multiple GPUs, and
-        # Forge only supports single-GPU tests.  Guitar skips "manual" tests
-        # unless they're also tagged "guitar".
         "gpu": [
-            "guitar",
-            "manual",
             "multi_gpu",
             "no_oss",
-            "notap",
         ],
     },
     backends = [
@@ -2409,15 +2401,9 @@ xla_test(
     name = "replicated_io_feed_test",
     srcs = ["replicated_io_feed_test.cc"],
     backend_tags = {
-        # This test is tagged "manual" because it requires multiple GPUs, and
-        # Forge only supports single-GPU tests.  Guitar skips "manual" tests
-        # unless they're also tagged "guitar".
         "gpu": [
-            "guitar",
-            "manual",
             "multi_gpu",
             "no_oss",
-            "notap",
         ],
     },
     backends = ["gpu"],
@@ -2790,7 +2776,10 @@ xla_test(
     size = "large",
     srcs = ["local_client_execute_test.cc"],
     shard_count = 30,
-    tags = ["optonly"],
+    tags = [
+        "optonly",
+        "test_xla_cpu_thunks",
+    ],
     deps = [
         ":literal_test_util",
         ":local_client_test_base",
@@ -3081,6 +3070,9 @@ xla_test(
 xla_test(
     name = "set_dimension_size_test",
     srcs = ["set_dimension_size_test.cc"],
+    backend_tags = {
+        "gpu": ["notsan"],  # TODO(b/345034145): Fix tsan error.
+    },
     tags = ["test_xla_cpu_thunks"],
     deps = [
         ":hlo_test_base",

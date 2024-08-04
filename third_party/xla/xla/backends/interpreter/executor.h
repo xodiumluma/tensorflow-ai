@@ -103,13 +103,8 @@ class XlaInterpreterExecutor : public StreamExecutorCommon {
       uint64_t size) override {
     return std::make_unique<HostMemoryAllocation>(new char[size], size, this);
   }
-  void HostMemoryDeallocate(void *mem, uint64_t size) override {
+  void HostMemoryDeallocate(void *mem) override {
     delete[] static_cast<char *>(mem);
-  }
-
-  absl::Status Memset(Stream *stream, DeviceMemoryBase *location,
-                      uint8_t pattern, uint64_t size) override {
-    return absl::InternalError("Interpreter can not memset");
   }
 
   // No "synchronize all activity" implemented for this platform at the moment.
