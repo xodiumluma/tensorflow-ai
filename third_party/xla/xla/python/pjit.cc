@@ -28,16 +28,21 @@ limitations under the License.
 #include <string>
 #include <string_view>
 #include <thread>  // NOLINT
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
+#include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/hash/hash.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/types/span.h"
 #include "nanobind/nanobind.h"
@@ -52,6 +57,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/memory.h"
 #include "xla/python/ifrt/sharding.h"
 #include "xla/python/jax_jit.h"
@@ -129,7 +135,10 @@ class PjitFunctionCache {
 
   int Size() const { return lru_list_.Size(); }
   int Capacity() const { return lru_list_.Capacity(); }
-  void Clear() { lru_list_.Clear(); }
+  void Clear() {
+    lru_list_.Clear();
+    functions_.clear();
+  }
 
  private:
   struct Key {
@@ -140,15 +149,32 @@ class PjitFunctionCache {
     nb::object global_cache_key;
 
     bool operator==(const Key& other) const {
-      return function.ptr() == other.function.ptr() &&
-             global_cache_key.equal(other.global_cache_key);
+      bool global_cache_eq;
+      try {
+        global_cache_eq = global_cache_key.equal(other.global_cache_key);
+      } catch (const nanobind::python_error& e) {
+        throw std::invalid_argument(
+            absl::StrCat("Equality of  global cache key lead to an exception. "
+                         "The error was:\n",
+                         e.what(), "\n"));
+      }
+      return function.ptr() == other.function.ptr() && global_cache_eq;
     }
   };
 
   template <typename H>
   friend H AbslHashValue(H h, const Key& key) {
     h = H::combine(std::move(h), key.function.ptr());
-    h = H::combine(std::move(h), xla::nb_hash(key.global_cache_key));
+    Py_hash_t hash;
+    try {
+      hash = nb::hash(key.global_cache_key);
+    } catch (const nanobind::python_error& e) {
+      if (!e.matches(PyExc_TypeError)) throw;
+      throw std::invalid_argument(absl::StrCat(
+          "Hashing global cache key lead to an exception. The error was:\n",
+          e.what(), "\n"));
+    }
+    h = H::combine(std::move(h), hash);
     return h;
   }
 
@@ -165,7 +191,9 @@ class PjitFunctionCache {
   };
 
   Cache::LRUList lru_list_;
-  absl::flat_hash_map<Key, std::unique_ptr<Value>> functions_;
+  absl::Mutex mu_;  // Non-trivial hashes need to be mutex locked.
+  // ABSL containers are not exception safe:
+  std::unordered_map<Key, std::unique_ptr<Value>, absl::Hash<Key>> functions_;
 };
 
 PjitFunctionCache::PjitFunctionCache(int capacity) : lru_list_(capacity) {}
@@ -175,7 +203,17 @@ std::shared_ptr<PjitFunctionCache::Cache> PjitFunctionCache::DefaultCache() {
 }
 
 std::shared_ptr<PjitFunctionCache::Cache> PjitFunctionCache::Lookup(
-    nb::handle function, nb::object global_cache_key) {
+    nb::handle function,
+    nb::object global_cache_key) ABSL_NO_THREAD_SAFETY_ANALYSIS {
+  {
+    // Because the gil can be released during cache insertion, this forces
+    // the lock order to be mu_ then gil so we must release the gil first.
+    nb::gil_scoped_release release;
+    // Acquire a mutex to avoid problems where the gil is released during
+    // cache insertion and then a second thread invalidates the cache order.
+    mu_.Lock();
+  }
+  absl::Cleanup unlock = [this]() ABSL_UNLOCK_FUNCTION(mu_) { mu_.Unlock(); };
   Key key;
   key.function = function;
   key.global_cache_key = global_cache_key;
@@ -186,7 +224,10 @@ std::shared_ptr<PjitFunctionCache::Cache> PjitFunctionCache::Lookup(
   std::shared_ptr<Cache> cache = std::make_shared<Cache>(&lru_list_);
   auto callback =
       nb::cpp_function([this, key{std::move(key)}](nb::handle weakref) {
-        functions_.erase(key);
+        auto it = functions_.find(key);
+        if (it != functions_.end()) {
+          functions_.erase(it);
+        }
       });
   PyObject* weakref = PyWeakref_NewRef(function.ptr(), callback.ptr());
   if (weakref) {
@@ -240,6 +281,8 @@ class PjitFunction {
 
   absl::StatusOr<nb::object> Call(nb::handle callable, PyObject* const* args,
                                   size_t nargs, PyObject* kwnames);
+
+  void InitExecutables();
 
   void ClearPythonReferences();
 
@@ -307,6 +350,7 @@ class PjitFunctionStore {
     for (auto* function : compiled_functions_) {
       function->ClearCache();
     }
+    compiled_functions_.clear();
   }
 
  private:
@@ -329,7 +373,7 @@ PjitFunction::PjitFunction(
       fun_(std::move(fun)),
       cache_miss_(std::move(cache_miss)),
       static_argnums_(std::move(static_argnums)),
-      global_cache_key_(global_cache_key),
+      global_cache_key_(std::move(global_cache_key)),
       pytree_registry_(std::move(pytree_registry)),
       shard_arg_fallback_(std::move(shard_arg_fallback)),
       cache_(std::move(cache)) {
@@ -340,13 +384,16 @@ PjitFunction::PjitFunction(
     PyUnicode_InternInPlace(&s);
     static_argnames_.push_back(nb::steal<nb::str>(s));
   }
+
+  GetGlobalPjitFunctionStore().Insert(this);
+}
+
+void PjitFunction::InitExecutables() {
   if (!fun_.has_value()) {
     executables_ = cache_->DefaultCache();
   } else {
-    executables_ = cache_->Lookup(fun_.value(), global_cache_key);
+    executables_ = cache_->Lookup(fun_.value(), global_cache_key_);
   }
-
-  GetGlobalPjitFunctionStore().Insert(this);
 }
 
 PjitFunction::~PjitFunction() { GetGlobalPjitFunctionStore().Erase(this); }
@@ -375,6 +422,8 @@ PrepareIfrtInputs(const xla::PyLoadedExecutable& executable,
                   std::vector<nb::object>& keep_alive_objects) {
   const auto& addressable_devices =
       executable.ifrt_loaded_executable()->addressable_devices();
+  const auto& num_global_devices =
+      executable.ifrt_loaded_executable()->num_devices();
   int num_args = flat_dynamic_args.size();
 
   std::vector<tsl::RCReference<xla::ifrt::Array>> num_args_arrays;
@@ -460,15 +509,13 @@ PrepareIfrtInputs(const xla::PyLoadedExecutable& executable,
     }
 
     if (sharding.type().ptr() == jax::PmapSharding::type().ptr()) {
-      CHECK(in_device_local_layout.is_none());
       CallShardArgFallback(arg.ptr(), in_shardings[dce_index],
                            in_device_local_layout, shard_arg_fallback,
                            num_args_arrays, keep_alive_objects);
       continue;
     }
 
-    if (py_array.num_shards() != addressable_devices.size()) {
-      CHECK(in_device_local_layout.is_none());
+    if (sharding_num_devices != num_global_devices) {
       CallShardArgFallback(arg.ptr(), in_shardings[dce_index],
                            in_device_local_layout, shard_arg_fallback,
                            num_args_arrays, keep_alive_objects);
@@ -483,9 +530,10 @@ PrepareIfrtInputs(const xla::PyLoadedExecutable& executable,
 
     const auto& ifrt_sharding = ifrt_array->sharding();
     if (sharding_num_devices == 1 &&
-        ifrt_sharding.devices().front() != addressable_devices[0]) {
-      auto& copy_group = copy_groups[std::make_pair(
-          ifrt_sharding.devices().front(), ifrt_sharding.memory_kind())];
+        ifrt_sharding.devices()->devices().front() != addressable_devices[0]) {
+      auto& copy_group =
+          copy_groups[std::make_pair(ifrt_sharding.devices()->devices().front(),
+                                     ifrt_sharding.memory_kind())];
       copy_group.indices.push_back(num_args_arrays.size());
       copy_group.arrays.push_back(tsl::FormRef(ifrt_array));
       num_args_arrays.push_back({});
@@ -499,8 +547,8 @@ PrepareIfrtInputs(const xla::PyLoadedExecutable& executable,
   if (!copy_groups.empty()) {
     xla::ifrt::Client* const ifrt_client =
         executable.ifrt_loaded_executable()->client();
-    xla::ifrt::DeviceList ifrt_devices(
-        xla::ifrt::DeviceList::Devices({addressable_devices[0]}));
+    tsl::RCReference<xla::ifrt::DeviceList> ifrt_devices =
+        xla::ifrt::BasicDeviceList::Create({addressable_devices[0]});
     for (auto& [key, group] : copy_groups) {
       TF_ASSIGN_OR_RETURN(
           auto copied_ifrt_arrays,
@@ -1028,11 +1076,17 @@ void InitializePjitFunction(
     nb::object global_cache_key,
     std::shared_ptr<xla::PyTreeRegistry> pytree_registry,
     nb::callable shard_arg_fallback, std::shared_ptr<PjitFunctionCache> cache) {
+  if (nb::isinstance<nb::list>(global_cache_key)) {
+    global_cache_key = nb::tuple(global_cache_key);
+  }
   new (&fn_obj->fun) PjitFunction(
       std::move(function_name), std::move(fun), std::move(cache_miss),
       std::move(static_argnums), std::move(static_argnames),
       std::move(global_cache_key), std::move(pytree_registry),
       std::move(shard_arg_fallback), std::move(cache));
+  // Handled separately because it is not exception safe to call this
+  // in the constructor because it leaves the object improperly constructed.
+  fn_obj->fun.InitExecutables();
 }
 
 nb::object MakePjitFunction(

@@ -171,8 +171,6 @@ class StreamExecutorGpuDevice : public PjRtStreamExecutorDevice {
 
   absl::Span<int const> coords() const;
 
-  int core_on_chip() const;
-
   absl::StatusOr<PjRtMemorySpace*> default_memory_space() const override;
 
  private:
@@ -275,6 +273,7 @@ absl::StatusOr<DeviceTopologyPair> BuildDistributedDevices(
     int node_id, int num_nodes,
     gpu::GpuExecutableRunOptions* gpu_executable_run_options,
     std::shared_ptr<KeyValueStoreInterface> kv_store, bool enable_mock_nccl,
+    std::optional<std::string_view> mock_gpu_topology = std::nullopt,
     absl::Duration get_local_topology_timeout = absl::Minutes(2),
     absl::Duration get_global_topology_timeout = absl::Minutes(5));
 
@@ -295,6 +294,8 @@ struct GpuClientOptions {
   std::shared_ptr<KeyValueStoreInterface> kv_store = nullptr;
 
   bool enable_mock_nccl = false;
+
+  std::optional<std::string> mock_gpu_topology;
 };
 
 absl::StatusOr<std::unique_ptr<PjRtClient>> GetStreamExecutorGpuClient(

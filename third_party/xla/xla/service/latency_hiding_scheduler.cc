@@ -73,12 +73,70 @@ bool IsNopInstruction(const HloInstruction& hlo) {
          (op == HloOpcode::kTuple && hlo.user_count() == 1 &&
           hlo.users().front()->opcode() == HloOpcode::kWhile);
 }
+
+bool InstructionDefinesValue(const HloInstruction* instruction,
+                             const HloValue* value) {
+  if (value->defining_instruction() == instruction) {
+    return true;
+  }
+  if (value->shape().has_layout() &&
+      value->shape().layout().memory_space() != kDefaultMemorySpace) {
+    return false;
+  }
+  // Also check if the instruction is a call to a computation that defines the
+  // value. This is needed in cases, e.g., where we wrap a value-defining
+  // instruction in a async call for offloading, and the async start itself will
+  // effectively define the value in the current scope that the scheduler is
+  // running in.
+  if (instruction->opcode() == HloOpcode::kAsyncStart) {
+    if (instruction->async_wrapped_opcode() == HloOpcode::kCall) {
+      return instruction->async_wrapped_instruction()
+                 ->called_computations()[0]
+                 ->root_instruction() == value->defining_instruction();
+    }
+    return instruction->async_wrapped_instruction() ==
+           value->defining_instruction();
+  }
+  return false;
+}
+
+bool InstructionFirstDefinesBuffer(
+    const HloInstruction* instruction,
+    const BufferInfoTracker::ValueInfo& buffer_value_info) {
+  if (buffer_value_info.first_definition == instruction) {
+    return true;
+  }
+  if (buffer_value_info.value->values()[0]->shape().has_layout() &&
+      buffer_value_info.value->values()[0]->shape().layout().memory_space() !=
+          kDefaultMemorySpace) {
+    return false;
+  }
+  // Similar to logic above, also check if the instruction is a call to a
+  // computation that defines the value.
+  if (instruction->opcode() == HloOpcode::kAsyncStart) {
+    if (instruction->async_wrapped_opcode() == HloOpcode::kCall) {
+      return instruction->async_wrapped_instruction()
+                 ->called_computations()[0]
+                 ->root_instruction() == buffer_value_info.first_definition;
+    }
+    return instruction->async_wrapped_instruction() ==
+           buffer_value_info.first_definition;
+  }
+  return false;
+}
+
 }  // namespace
 
 CanonicalAsyncOp DefaultGetCanonicalAsyncOp(const HloInstruction& hlo) {
   switch (hlo.opcode()) {
     case HloOpcode::kAsyncStart:
     case HloOpcode::kAsyncDone:
+      if (hlo.async_wrapped_opcode() == HloOpcode::kCall) {
+        return {hlo.opcode(), hlo.async_wrapped_instruction()
+                                  ->called_computations()[0]
+                                  ->root_instruction()
+                                  ->opcode()};
+      }
       return {hlo.opcode(), hlo.async_wrapped_opcode()};
     case HloOpcode::kAllReduceStart:
       return {HloOpcode::kAsyncStart, HloOpcode::kAllReduce};
@@ -596,7 +654,7 @@ void MemoryPressureTracker::Initialize(
             output_values.push_back(std::make_pair(
                 buffer_tracker_.GetBufferInfo(buffer->id()), index));
             if (absl::c_any_of(buffer->values(), [&](const HloValue* value) {
-                  return value->defining_instruction() == instruction;
+                  return InstructionDefinesValue(instruction, value);
                 })) {
               defined_values.push_back(
                   buffer_tracker_.GetBufferInfo(buffer->id()));
@@ -663,7 +721,7 @@ void MemoryPressureTracker::UpdateBuffers(const HloInstruction* instruction) {
         continue;
       }
       if (live_buffers_[b.value->id()] != 0) {
-        if (b.first_definition == instruction) {
+        if (InstructionFirstDefinesBuffer(instruction, b)) {
           live_memory_usage_ -= b.buffer_size;
           live_buffers_set_.erase(b.value->id());
         }
@@ -721,7 +779,7 @@ std::pair<int64_t, int64_t> MemoryPressureTracker::MemoryPressureDifference(
         continue;
       }
       if (live_buffers_[b.value->id()]) {
-        if (b.first_definition == instruction) {
+        if (InstructionFirstDefinesBuffer(instruction, b)) {
           increase -= b.buffer_size;
         }
       }
@@ -1275,7 +1333,7 @@ DefaultSchedulerCore::FindAndExtractBestNodeAvailable(
         }
         return false;
       };
-  VLOG(1) << "Current time: " << sched_state.current_time;
+  VLOG(2) << "Current time: " << sched_state.current_time;
   ReadySetLt ready_lt{&sched_state, target_scheduling_rule_,
                       early_target_scheduling_rule_};
   // Construct a schedule candidate for caching.
@@ -1308,7 +1366,7 @@ DefaultSchedulerCore::FindAndExtractBestNodeAvailable(
     if (ready_chosen.node == nullptr) {
       ready_chosen = ready_candidate;
       chosen_it = ready_node_it;
-      VLOG(1) << "Choosing from ready (" << ready_chosen.node->GetInstr().name()
+      VLOG(2) << "Choosing from ready (" << ready_chosen.node->GetInstr().name()
               << ") Reason: First Candidate";
       continue;
     }
@@ -1323,7 +1381,7 @@ DefaultSchedulerCore::FindAndExtractBestNodeAvailable(
           }
           return std::string("N/A");
         };
-    VLOG(1) << "Choosing from ready ("
+    VLOG(2) << "Choosing from ready ("
             << (new_candidate_selected ? ready_candidate.node->GetInstr().name()
                                        : ready_chosen.node->GetInstr().name())
             << ") vs ("
@@ -1367,7 +1425,7 @@ void DefaultSchedulerCore::LogInstruction(const HloInstruction* instr) const {
 void PrintOccupierList(
     std::vector<std::pair<HloEdge*, HloGraphNode::TimeCost>>& occupiers) {
   for (int64_t i = 0; i < occupiers.size(); i++) {
-    VLOG(2) << "\tOccupier " << i << ": "
+    VLOG(3) << "\tOccupier " << i << ": "
             << occupiers[i].first->Target().GetInstr().name()
             << ", projected finish time: " << occupiers[i].second
             << " original latency: " << occupiers[i].first->OriginalLatency()
@@ -1533,11 +1591,11 @@ absl::StatusOr<HloGraphNode::TimeCost> DefaultSchedulerCore::ScheduleNode(
         auto occupiers = sched_state->shareable_resource_occupiers[resource];
         for (auto [occupier_edge, edge_pft] : occupiers) {
           if (occupier_edge == &pred) {
-            VLOG(2) << "Ready time of scheduled node " << n->GetInstr().name()
+            VLOG(3) << "Ready time of scheduled node " << n->GetInstr().name()
                     << " before update with pft: " << edge_pft
                     << ", ready_time: " << schedule_time;
             schedule_time = std::max(schedule_time, edge_pft);
-            VLOG(2) << "Ready time of scheduled node " << n->GetInstr().name()
+            VLOG(3) << "Ready time of scheduled node " << n->GetInstr().name()
                     << " after update with pft: " << edge_pft
                     << ", ready_time: " << schedule_time;
           }
@@ -1558,7 +1616,7 @@ absl::StatusOr<HloGraphNode::TimeCost> DefaultSchedulerCore::ScheduleNode(
             schedule_time, edge,
             sched_state->shareable_resource_occupiers[resource]));
         if (VLOG_IS_ON(2)) {
-          VLOG(2) << "Occupier list for "
+          VLOG(3) << "Occupier list for "
                   << sched_state->async_tracker->GetResourceName(resource)
                   << ": ";
           PrintOccupierList(
@@ -1578,7 +1636,7 @@ absl::StatusOr<HloGraphNode::TimeCost> DefaultSchedulerCore::ScheduleNode(
                 current_time, inverse_edge,
                 sched_state->shareable_resource_occupiers[resource]));
             if (VLOG_IS_ON(2)) {
-              VLOG(2) << "Occupier list for "
+              VLOG(3) << "Occupier list for "
                       << sched_state->async_tracker->GetResourceName(resource)
                       << ": ";
               PrintOccupierList(
@@ -1633,12 +1691,12 @@ absl::StatusOr<HloGraphNode::TimeCost> DefaultSchedulerCore::ScheduleNode(
           auto occupiers = sched_state->shareable_resource_occupiers[resource];
           for (auto [occupier_edge, edge_pft] : occupiers) {
             if (occupier_edge == &pred) {
-              VLOG(2) << "Ready time of predecessor "
+              VLOG(3) << "Ready time of predecessor "
                       << edge.Target().GetInstr().name()
                       << " before update with pft: " << edge_pft
                       << ", ready_time: " << ready_time;
               ready_time = std::max(ready_time, edge_pft);
-              VLOG(2) << "Ready time of predecessor "
+              VLOG(3) << "Ready time of predecessor "
                       << edge.Target().GetInstr().name()
                       << " after update with pft: " << edge_pft
                       << ", ready_time: " << ready_time;
@@ -2024,7 +2082,7 @@ absl::Status DefaultSchedulerCore::SchedulingStep(
   CHECK(node != nullptr);
   TF_ASSIGN_OR_RETURN(sched_state->current_time,
                       ScheduleNode(node, sched_state));
-  VLOG(1) << "Scheduled: " << node->GetInstr().name();
+  VLOG(2) << "Scheduled: " << node->GetInstr().name();
   XLA_VLOG_LINES(5, node->ToString());
   return absl::OkStatus();
 }
@@ -2065,8 +2123,8 @@ DefaultSchedulerCore::ScheduleComputation(const HloComputation* computation) {
   // Schedule in order bottom up.
   while (!sched_state.ready_set.empty()) {
     VLOG(10) << "Current ready time: " << sched_state.current_time;
-    VLOG(1) << "Current ready queue:";
-    XLA_VLOG_LINES(1, [&sched_state]() {
+    VLOG(2) << "Current ready queue:";
+    XLA_VLOG_LINES(2, [&sched_state]() {
       struct LogFormatter {
         void operator()(std::string* out, const HloGraphNode* n) const {
           out->append(absl::StrCat("\t", n->GetInstr().name(),
@@ -2098,7 +2156,7 @@ DefaultSchedulerCore::ScheduleComputation(const HloComputation* computation) {
       << "Not all instructions have been scheduled "
       << sched_state.new_sequence_reversed.size() << " vs "
       << sched_state.sched_graph.GetOriginalInstrList().size();
-  VLOG(1) << "Total time: "
+  VLOG(2) << "Total time: "
           << sched_state.sched_graph
                  .GetNode(sched_state.new_sequence_reversed.front())
                  .GetReadyTime();
@@ -2391,7 +2449,8 @@ absl::StatusOr<bool> LatencyHidingScheduler::Run(
     }
   }
   LOG(INFO) << "LatencyHidingScheduler current memory usage: "
-            << scheduler_core_->GetMemoryPeak() << " bytes.";
+            << scheduler_core_->GetMemoryPeak()
+            << " bytes. Current limit: " << scheduler_core_->GetMemoryLimit();
   for (HloComputation* computation : computations_to_schedule) {
     VLOG(1) << "Statistics before scheduling:";
     LogScheduleStatistics(computation);

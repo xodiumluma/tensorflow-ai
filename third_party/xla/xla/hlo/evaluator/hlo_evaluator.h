@@ -52,6 +52,7 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/ml_dtypes.h"
 
 namespace xla {
 
@@ -162,7 +163,7 @@ class HloEvaluator : public ConstDfsHloVisitorWithDefault {
   // {A = x, C = y}, this evaluates op(x, B, y).
   absl::StatusOr<Literal> EvaluateWithSubstitutions(
       const HloInstruction* instruction,
-      const absl::flat_hash_map<const HloInstruction*, const Literal*>&
+      const absl::flat_hash_map<const HloInstruction*, const LiteralBase*>&
           substitutions);
 
   absl::StatusOr<Literal> EvaluateElementwiseBinaryOp(HloOpcode opcode,
@@ -238,6 +239,12 @@ class HloEvaluator : public ConstDfsHloVisitorWithDefault {
       const Array2D<std::complex<double>>& rhs);
   static std::unique_ptr<Array2D<int32_t>> MatmulArray2D(
       const Array2D<int32_t>& lhs, const Array2D<int32_t>& rhs);
+  static std::unique_ptr<Array2D<tsl::float8_e4m3fn>> MatmulArray2D(
+      const Array2D<tsl::float8_e4m3fn>& lhs,
+      const Array2D<tsl::float8_e4m3fn>& rhs);
+  static std::unique_ptr<Array2D<tsl::float8_e5m2>> MatmulArray2D(
+      const Array2D<tsl::float8_e5m2>& lhs,
+      const Array2D<tsl::float8_e5m2>& rhs);
   static std::unique_ptr<Array2D<uint8_t>> MatmulArray2D(
       const Array2D<uint8_t>& lhs, const Array2D<uint8_t>& rhs);
 

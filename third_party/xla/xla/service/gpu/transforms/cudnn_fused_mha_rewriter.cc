@@ -41,7 +41,7 @@ limitations under the License.
 #include "xla/permutation_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cublas_cudnn.h"
-#include "xla/service/gpu/matmul_utils.h"
+#include "xla/service/gpu/matmul_indexing_utils.h"
 #include "xla/service/gpu/stream_executor_util.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/shape.h"
@@ -1270,6 +1270,8 @@ absl::StatusOr<HloInstruction*> FuseFwdMultiHeadedAttentionBlock(
   fmha_config.set_mask_type(is_causal_mask ? CudnnfMHABackendConfig::CAUSAL
                                            : CudnnfMHABackendConfig::NO_MASK);
 
+  // disable sliding window length here
+  fmha_config.set_sliding_window_length(0);
   const Shape& output_shape = bmm_2->shape();
 
   Shape call_shape;
@@ -1496,7 +1498,8 @@ absl::StatusOr<bool> FuseBwdMultiHeadedAttentionBlock(
   bwd_fmha_config.set_mask_type(is_causal_mask
                                     ? CudnnfMHABackendConfig::CAUSAL
                                     : CudnnfMHABackendConfig::NO_MASK);
-
+  // disable sliding window length here
+  bwd_fmha_config.set_sliding_window_length(0);
   *bwd_fmha_config.mutable_intermediate_tensor_shape() =
       fwd_config.intermediate_tensor_shape();
   {

@@ -979,7 +979,7 @@ bool HloEvaluator::TryEvaluate(const HloInstruction* instruction,
 
 absl::StatusOr<Literal> HloEvaluator::EvaluateWithSubstitutions(
     const HloInstruction* instruction,
-    const absl::flat_hash_map<const HloInstruction*, const Literal*>&
+    const absl::flat_hash_map<const HloInstruction*, const LiteralBase*>&
         substitutions) {
   std::vector<std::unique_ptr<HloInstruction>> owned_operands;
   for (const HloInstruction* operand : instruction->operands()) {
@@ -1190,7 +1190,9 @@ absl::Status HloEvaluator::EvaluateInternal(
 
   if (!recursively_evaluate_nonconstant_operands) {
     if (!hlo_query::AllOperandsAreConstants(*instruction)) {
-      return tsl::errors::FailedPrecondition("Not all operands are constants.");
+      return absl::FailedPreconditionError(
+          absl::StrCat("Not all operands are constants. Instruction: ",
+                       instruction->ToString()));
     }
   } else {
     if (instruction->opcode() == HloOpcode::kGetTupleElement) {
@@ -3146,8 +3148,19 @@ absl::Status HloEvaluator::HandleGetTupleElement(
 }
 
 absl::Status HloEvaluator::HandleCopy(const HloInstruction* copy) {
-  TF_RET_CHECK(ShapeUtil::Compatible(copy->shape(), copy->operand(0)->shape()));
-  evaluated_[copy] = GetEvaluatedLiteralFor(copy->operand(0)).Clone();
+  // If only the element type is different, try converting the literal.
+  if (copy->shape().element_type() !=
+      copy->operand(0)->shape().element_type()) {
+    TF_ASSIGN_OR_RETURN(Literal result,
+                        GetEvaluatedLiteralFor(copy->operand(0))
+                            .Convert(copy->shape().element_type()));
+    TF_RET_CHECK(ShapeUtil::Compatible(copy->shape(), result.shape()));
+    evaluated_[copy] = std::move(result);
+  } else {
+    TF_RET_CHECK(
+        ShapeUtil::Compatible(copy->shape(), copy->operand(0)->shape()));
+    evaluated_[copy] = GetEvaluatedLiteralFor(copy->operand(0)).Clone();
+  }
   return absl::OkStatus();
 }
 
@@ -3206,9 +3219,10 @@ absl::Status HloEvaluator::HandleAsyncDone(const HloInstruction* async_done) {
 absl::Status HloEvaluator::HandleCopyStart(const HloInstruction* copy_start) {
   if (copy_start->user_count() != 1 ||
       copy_start->users().at(0)->opcode() != HloOpcode::kCopyDone) {
-    return tsl::errors::FailedPrecondition(
-        "Cannot evaluate a kCopyStart that doesn't have a single kCopyDone "
-        "user.");
+    return absl::FailedPreconditionError(
+        absl::StrCat("Cannot evaluate a kCopyStart that doesn't have a single "
+                     "kCopyDone user. Instruction: ",
+                     copy_start->ToString()));
   }
 
   // The context in index {2} is undefined, but since we can't represent
@@ -3226,9 +3240,10 @@ absl::Status HloEvaluator::HandleCopyStart(const HloInstruction* copy_start) {
 absl::Status HloEvaluator::HandleCopyDone(const HloInstruction* copy_done) {
   const HloInstruction* operand = copy_done->operand(0);
   if (operand->opcode() != HloOpcode::kCopyStart) {
-    return tsl::errors::FailedPrecondition(
-        "Cannot evaluate a kCopyDone that doesn't have a kCopyStart as "
-        "operand.");
+    return absl::FailedPreconditionError(
+        absl::StrCat("Cannot evaluate a kCopyDone that doesn't have a "
+                     "kCopyStart as operand. Instruction: ",
+                     copy_done->ToString()));
   }
 
   const Literal& operand_tuple_literal = GetEvaluatedLiteralFor(operand);
@@ -4752,6 +4767,84 @@ std::unique_ptr<Array2D<uint8_t>> HloEvaluator::MatmulArray2D(
     const Array2D<uint8_t>& lhs, const Array2D<uint8_t>& rhs) {
   return MatmulArray2DImpl<uint8_t>(
       lhs, rhs, __xla_cpu_runtime_EigenSingleThreadedMatMulU8);
+}
+
+/* static */ std::unique_ptr<Array2D<float>> Array2DF8E5M2ToF32(
+    const Array2D<tsl::float8_e5m2>& input) {
+  auto result = std::make_unique<Array2D<float>>(input.height(), input.width());
+  for (int64_t rowno = 0; rowno < input.height(); ++rowno) {
+    for (int64_t colno = 0; colno < input.width(); ++colno) {
+      (*result)(rowno, colno) = static_cast<float>(input(rowno, colno));
+    }
+  }
+  return result;
+}
+
+/* static */ std::unique_ptr<Array2D<float>> Array2DF8E4M3FNToF32(
+    const Array2D<tsl::float8_e4m3fn>& input) {
+  auto result = std::make_unique<Array2D<float>>(input.height(), input.width());
+  for (int64_t rowno = 0; rowno < input.height(); ++rowno) {
+    for (int64_t colno = 0; colno < input.width(); ++colno) {
+      (*result)(rowno, colno) = static_cast<float>(input(rowno, colno));
+    }
+  }
+  return result;
+}
+
+/* static */ std::unique_ptr<Array2D<tsl::float8_e5m2>> Array2DF32ToF8E5M2(
+    const Array2D<float>& input) {
+  auto result = std::make_unique<Array2D<tsl::float8_e5m2>>(input.height(),
+                                                            input.width());
+  for (int64_t rowno = 0; rowno < input.height(); ++rowno) {
+    for (int64_t colno = 0; colno < input.width(); ++colno) {
+      (*result)(rowno, colno) =
+          static_cast<tsl::float8_e5m2>(input(rowno, colno));
+    }
+  }
+  return result;
+}
+
+/* static */ std::unique_ptr<Array2D<tsl::float8_e4m3fn>> Array2DF32ToF8E4M3FN(
+    const Array2D<float>& input) {
+  auto result = std::make_unique<Array2D<tsl::float8_e4m3fn>>(input.height(),
+                                                              input.width());
+  for (int64_t rowno = 0; rowno < input.height(); ++rowno) {
+    for (int64_t colno = 0; colno < input.width(); ++colno) {
+      (*result)(rowno, colno) =
+          static_cast<tsl::float8_e4m3fn>(input(rowno, colno));
+    }
+  }
+  return result;
+}
+
+static bool promote_f8_to_f32 = true;
+
+std::unique_ptr<Array2D<tsl::float8_e5m2>> HloEvaluator::MatmulArray2D(
+    const Array2D<tsl::float8_e5m2>& lhs,
+    const Array2D<tsl::float8_e5m2>& rhs) {
+  if (promote_f8_to_f32) {
+    auto lhs_float = Array2DF8E5M2ToF32(lhs);
+    auto rhs_float = Array2DF8E5M2ToF32(rhs);
+    auto result = MatmulArray2D(*lhs_float, *rhs_float);
+    return Array2DF32ToF8E5M2(*result);
+  } else {
+    return MatmulArray2DImpl<tsl::float8_e5m2>(
+        lhs, rhs, __xla_cpu_runtime_EigenSingleThreadedMatMulF8E5M2);
+  }
+}
+
+std::unique_ptr<Array2D<tsl::float8_e4m3fn>> HloEvaluator::MatmulArray2D(
+    const Array2D<tsl::float8_e4m3fn>& lhs,
+    const Array2D<tsl::float8_e4m3fn>& rhs) {
+  if (promote_f8_to_f32) {
+    auto lhs_float = Array2DF8E4M3FNToF32(lhs);
+    auto rhs_float = Array2DF8E4M3FNToF32(rhs);
+    auto result = MatmulArray2D(*lhs_float, *rhs_float);
+    return Array2DF32ToF8E4M3FN(*result);
+  } else {
+    return MatmulArray2DImpl<tsl::float8_e4m3fn>(
+        lhs, rhs, __xla_cpu_runtime_EigenSingleThreadedMatMulF8E4M3FN);
+  }
 }
 
 }  // namespace xla

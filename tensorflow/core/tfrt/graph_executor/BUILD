@@ -12,8 +12,10 @@ package(
 package_group(
     name = "friends",
     packages = [
+        # copybara:uncomment "//cloud/ai/platform/prediction/...",
         # copybara:uncomment "//learning/brain/experimental/tfrt/native_lowering/...",
         # copybara:uncomment "//learning/brain/tfrt/...",
+        # copybara:uncomment "//learning/infra/mira/experimental/orbax_model/...",
         # copybara:uncomment "//learning/serving/servables/tfrt/...",
         # copybara:uncomment "//smartass/brain/inference/...",
         # copybara:uncomment "//tensorflow/compiler/mlir/tfrt/...",
@@ -221,7 +223,6 @@ tf_proto_library(
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "config_proto_py_pb2",
-#     api_version = 2,
 #     visibility = ["//visibility:public"],
 #     deps = [":config_proto"],
 # )

@@ -22,8 +22,10 @@ limitations under the License.
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/TypeRange.h"
+#include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
@@ -111,6 +113,16 @@ mlir::ValueRange EmitLoopNest(
     mlir::function_ref<llvm::SmallVector<mlir::Value>(
         mlir::ValueRange iter_args, mlir::ValueRange dim_values,
         mlir::ValueRange symbol_values)>
+        create_body,
+    bool vectorize = false);
+
+// Same as EmitLoopNest, but uses xla_gpu.loop.
+mlir::ValueRange EmitXlaLoopOp(
+    mlir::ImplicitLocOpBuilder& b, mlir::ValueRange dim_values,
+    mlir::ValueRange iter_args_inits, const IndexingMap& indexing_map,
+    mlir::function_ref<llvm::SmallVector<mlir::Value>(
+        mlir::ValueRange ivs, mlir::ValueRange map_results,
+        mlir::ValueRange iter_args)>
         create_body,
     bool vectorize = false);
 

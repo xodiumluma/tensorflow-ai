@@ -205,6 +205,16 @@ if(TFLITE_ENABLE_XNNPACK)
       "${CMAKE_BINARY_DIR}/pthreadpool")
   endif()
   list(APPEND TFLITE_TARGET_DEPENDENCIES pthreadpool)
+
+  IF(NOT DEFINED FP16_SOURCE_DIR)
+    MESSAGE(STATUS "Downloading FP16 to ${CMAKE_BINARY_DIR}/FP16-source (define FP16_SOURCE_DIR to avoid it)")
+    CONFIGURE_FILE(cmake/DownloadFP16.cmake "${CMAKE_BINARY_DIR}/FP16-download/CMakeLists.txt")
+    EXECUTE_PROCESS(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" .
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/FP16-download")
+    EXECUTE_PROCESS(COMMAND "${CMAKE_COMMAND}" --build .
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/FP16-download")
+    SET(FP16_SOURCE_DIR "${CMAKE_BINARY_DIR}/FP16-source" CACHE STRING "FP16 source directory")
+  ENDIF()
 endif()
 set(TF_TARGET_PRIVATE_OPTIONS "")
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
@@ -670,8 +680,10 @@ set(_ALL_TFLITE_SRCS
   ${TFLITE_SOURCE_DIR}/internal/signature_def.h
   ${TFLITE_SOURCE_DIR}/kernels/internal/utils/sparsity_format_converter.cc
   ${TFLITE_SOURCE_DIR}/schema/conversion_metadata_generated.h
+  ${TFLITE_SOURCE_DIR}/schema/schema_generated.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/schema_utils.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/schema_generated.h
+  ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/conversion_metadata_generated.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/control_edges.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/string_utils.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/string_utils.h
@@ -687,7 +699,6 @@ set(_ALL_TFLITE_SRCS
   ${TF_SOURCE_DIR}/compiler/mlir/lite/allocation.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/mmap_allocation.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/mmap_allocation_disabled.cc
-  ${TFLITE_SOURCE_DIR}/schema/schema_generated.h
 )
 
 if(_TFLITE_ENABLE_MMAP)

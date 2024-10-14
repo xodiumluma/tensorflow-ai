@@ -56,9 +56,9 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/lib/gtl/map_util.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/gtl/map_util.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/fingerprint.h"
@@ -783,7 +783,7 @@ absl::StatusOr<HloModuleConfig> HloModule::CreateModuleConfigFromProto(
                                                   execution_options));
   if (!config.has_static_device_assignment()) {
     if (module.has_device_assignment()) {
-      // Get the proto from the exeuction options rather than the module proto.
+      // Get the proto from the execution options rather than the module proto.
       TF_ASSIGN_OR_RETURN(
           std::unique_ptr<DeviceAssignment> device_assignment,
           DeviceAssignment::Deserialize(module.device_assignment()));

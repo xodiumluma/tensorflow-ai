@@ -22,7 +22,6 @@ limitations under the License.
 #include <variant>
 #include <vector>
 
-#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -47,6 +46,7 @@ limitations under the License.
 #include "xla/service/llvm_ir/llvm_type_conversion_util.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/logging.h"
 
 namespace xla {
@@ -428,7 +428,7 @@ llvm::CallInst* EmitCallToTargetIntrinsic(
     LOG(FATAL) << "Invalid triple " << target_triple.str();
   }
 
-  llvm::Function* intrinsic = llvm::Intrinsic::getDeclaration(
+  llvm::Function* intrinsic = llvm::Intrinsic::getOrInsertDeclaration(
       module, llvm_intrinsic_id, llvm_ir::AsArrayRef(overloaded_types));
   return b->CreateCall(intrinsic, llvm_ir::AsArrayRef(operands));
 }

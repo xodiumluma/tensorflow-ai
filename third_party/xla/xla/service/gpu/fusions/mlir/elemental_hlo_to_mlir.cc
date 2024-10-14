@@ -66,6 +66,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/translate/hlo_to_mhlo/hlo_utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 #include "xla/mlir_hlo/mhlo/transforms/map_mhlo_to_scalar_op.h"
 #include "xla/primitive_util.h"
@@ -77,7 +78,7 @@ limitations under the License.
 #include "xla/service/gpu/model/indexing_map.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/translate/hlo_to_mhlo/hlo_utils.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -1528,6 +1529,9 @@ ValueRange EmitLoopNestImpl(
   };
   scf::LoopNest loop_nest =
       scf::buildLoopNest(b, b.getLoc(), lbs, ubs, steps, iter_args_inits, bb);
+  if (loop_nest.results.empty()) {
+    return {};
+  }
   ValueRange result_range =
       loop_nest.results.front().getDefiningOp()->getResults();
   CHECK_EQ(result_range.size(), loop_nest.results.size())
@@ -1536,6 +1540,57 @@ ValueRange EmitLoopNestImpl(
 }
 
 }  // namespace
+
+ValueRange EmitXlaLoopOp(ImplicitLocOpBuilder& b, ValueRange dim_values,
+                         ValueRange iter_args_inits,
+                         const IndexingMap& indexing_map,
+                         mlir::function_ref<SmallVector<Value>(
+                             ValueRange /*ivs*/, ValueRange /*map_results*/,
+                             ValueRange /*iter_args*/)>
+                             create_body,
+                         bool vectorize) {
+  SmallVector<Value, 4> vector_inits;
+  if (vectorize) {
+    CHECK_EQ(indexing_map.GetSymbolBounds().back().lower, 0);
+    int vector_size = indexing_map.GetSymbolBounds().back().upper + 1;
+    vector_inits = iter_args_inits;
+    for (auto& init : vector_inits) {
+      if (!mlir::isa<mlir::ShapedType>(init.getType())) {
+        auto vector_ty = mlir::VectorType::get({vector_size}, init.getType());
+        init = b.create<mlir::vector::SplatOp>(vector_ty, init);
+      }
+    }
+    iter_args_inits = vector_inits;
+  }
+  auto bb = [&](OpBuilder& nested_builder, Location loc, ValueRange ivs,
+                ValueRange map_results, ValueRange iter_args) {
+    SmallVector<Value, 4> results;
+    if (vectorize) {
+      SmallVector<Value, 4> vector_args;
+      vector_args = iter_args;
+      // Extract the vector elements.
+      for (auto& init : vector_args) {
+        if (mlir::isa<mlir::VectorType>(init.getType())) {
+          init = nested_builder.create<mlir::vector::ExtractOp>(loc, init,
+                                                                ivs.back());
+        }
+      }
+      results = create_body(ivs, map_results, vector_args);
+      // Insert the results.
+      for (auto [index, init] : llvm::enumerate(iter_args)) {
+        if (mlir::isa<mlir::VectorType>(init.getType())) {
+          results[index] = nested_builder.create<mlir::vector::InsertOp>(
+              loc, results[index], iter_args[index], ivs.back());
+        }
+      }
+    } else {
+      results = create_body(ivs, map_results, iter_args);
+    }
+    nested_builder.create<xla::gpu::YieldOp>(loc, results);
+  };
+  return b.create<LoopOp>(indexing_map, dim_values, iter_args_inits, bb)
+      .getResults();
+}
 
 ValueRange EmitLoopNest(ImplicitLocOpBuilder& b, ValueRange dim_values,
                         ValueRange iter_args_inits,
@@ -1572,13 +1627,12 @@ ValueRange EmitLoopNest(ImplicitLocOpBuilder& b, ValueRange dim_values,
     remainder.GetMutableSymbolBound(sym_index).lower = bound.upper;
     remainder.Simplify();
 
-    VLOG(5) << "Peeled indexing map " << indexing_map.ToString() << "\n into "
-            << peeled_map.ToString() << "\nand remainder\n"
-            << remainder.ToString();
+    VLOG(5) << "Peeled indexing map " << indexing_map << "\n into "
+            << peeled_map << "\nand remainder\n"
+            << remainder;
     return EmitLoopNestImpl(b, dim_values, first_results, remainder,
                             create_body, vectorize);
   }
-
   return EmitLoopNestImpl(b, dim_values, iter_args_inits, indexing_map,
                           create_body, vectorize);
 }

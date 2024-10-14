@@ -149,11 +149,14 @@ def cuda_header_library(
         **kwargs
     )
 
-def cuda_library(copts = [], tags = [],**kwargs):
+def cuda_library(copts = [], tags = [], deps = [], **kwargs):
     """Wrapper over cc_library which adds default CUDA options."""
     native.cc_library(
         copts = cuda_default_copts() + copts,
         tags = tags + ["gpu"],
+        deps = deps + if_cuda_is_configured([
+            "@local_config_cuda//cuda:implicit_cuda_headers_dependency",
+        ]),
         **kwargs
     )
 
@@ -179,3 +182,15 @@ enable_cuda_flag = rule(
     build_setting = config.bool(flag = True),
     attrs = {"enable_override": attr.bool()},
 )
+
+def if_version_equal_or_greater_than(
+        lib_version,
+        dist_version,
+        if_true,
+        if_false = []):
+    if tuple([int(x) for x in lib_version.split(".")]) >= tuple([
+        int(x)
+        for x in dist_version.split(".")
+    ]):
+        return if_true
+    return if_false

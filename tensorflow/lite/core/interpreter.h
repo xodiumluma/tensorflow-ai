@@ -344,6 +344,8 @@ class Interpreter {
   /// If you need to specify delegates, you have to do that before calling this
   /// function. This function will additionally apply default delegates. Thus,
   /// applying delegates after that might lead to undesirable behaviors.
+  /// If you need `SignatureRunner` without applying default delegates,
+  /// use `BuiltinOpResolverWithoutDefaultDelegates`.
   SignatureRunner* GetSignatureRunner(const char* signature_key);
 
   /// \warning Experimental interface, subject to change. \n \brief Returns a

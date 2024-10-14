@@ -15,18 +15,23 @@ limitations under the License.
 
 #include "xla/service/gpu/gpu_compiler.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "xla/autotune_results.pb.h"
@@ -42,9 +47,9 @@ limitations under the License.
 #include "xla/service/compiler.h"
 #include "xla/service/executable.h"
 #include "xla/service/gpu/autotuning/autotuner_util.h"
+#include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/gpu_hlo_schedule.h"
 #include "xla/service/gpu/metrics.h"
-#include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
@@ -85,6 +90,13 @@ class GpuCompilerTest : public HloTestBase {
     TF_RETURN_IF_ERROR(ScheduleGpuModule(module, 4, gpu_device_info).status());
     return tensorflow::down_cast<GpuCompiler*>(compiler)
         ->RunPostSchedulingPipelines(module, 4 * 1024 * 1024, gpu_device_info);
+  }
+
+  const stream_executor::GpuComputeCapability& GpuComputeComp() {
+    return backend()
+        .default_stream_executor()
+        ->GetDeviceDescription()
+        .gpu_compute_capability();
   }
 };
 
@@ -457,8 +469,7 @@ ENTRY main {
   AutotunerUtil::ClearAutotuneResults();
   DebugOptions triton_disabled_debug_options = GetDebugOptionsForTest();
   triton_disabled_debug_options.set_xla_gpu_enable_dynamic_slice_fusion(false);
-  triton_disabled_debug_options.set_xla_gpu_unsupported_enable_triton_gemm(
-      false);
+  triton_disabled_debug_options.set_xla_gpu_enable_triton_gemm(false);
   config.set_debug_options(triton_disabled_debug_options);
   TF_ASSERT_OK_AND_ASSIGN(module,
                           ParseAndReturnVerifiedModule(hlo_string, config));
@@ -516,7 +527,7 @@ ENTRY main {
     HloModuleConfig config;
     DebugOptions debug_options = GetDebugOptionsForTest();
     debug_options.set_xla_gpu_cublas_fallback(enable_blas_fallback);
-    debug_options.set_xla_gpu_unsupported_enable_triton_gemm(enable_triton);
+    debug_options.set_xla_gpu_enable_triton_gemm(enable_triton);
     if (!enable_blas) {
       debug_options.add_xla_disable_hlo_passes("cublas-gemm-rewriter");
     }
@@ -698,7 +709,7 @@ CHECK-SAME:    frontend_attributes={_xla_send_recv_pipeline="0"}
   debug_options.set_xla_gpu_enable_latency_hiding_scheduler(true);
   debug_options.set_xla_gpu_collective_permute_decomposer_threshold(1);
   debug_options.set_xla_gpu_enable_pipelined_p2p(true);
-  debug_options.set_xla_gpu_unsupported_enable_triton_gemm(false);
+  debug_options.set_xla_gpu_enable_triton_gemm(false);
   config.set_debug_options(debug_options);
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           ParseAndReturnVerifiedModule(kModuleStr, config));
@@ -968,16 +979,124 @@ TEST_F(GpuCompilerTest, TestFlag_xla_gpu_unsafe_pipelined_loop_annotator) {
   EXPECT_TRUE(filecheck_matched);
 }
 
-using GpuCompilerPassTest = GpuCompilerTest;
+bool HasBlockLevelFusionConfig(const HloInstruction* fusion) {
+  return fusion->opcode() == HloOpcode::kFusion &&
+         fusion->has_backend_config() &&
+         fusion->backend_config<GpuBackendConfig>().ok() &&
+         fusion->backend_config<GpuBackendConfig>()
+             ->fusion_backend_config()
+             .has_block_level_fusion_config();
+}
 
-TEST_F(GpuCompilerPassTest,
-       GpuCompilerRunsTritonGemmRewriterByDefaultFromAmpere) {
+TEST_F(GpuCompilerTest,
+       LoopFusionRootedInTransposeIsRewrittenToBlockLevelByDefaultPostAmpere) {
   auto cc = backend()
                 .default_stream_executor()
                 ->GetDeviceDescription()
                 .cuda_compute_capability();
 
-  bool expect_triton_gemm_rewriter_has_run = cc.IsAtLeastAmpere();
+  constexpr absl::string_view transpose_fusion_module = R"(
+transpose {
+  p0 = f32[1024,1024,1024] parameter(0)
+  ROOT transpose = f32[1024,1024,1024] transpose(p0), dimensions={2,1,0}
+}
+
+ENTRY main {
+  p0 = f32[1024,1024,1024] parameter(0)
+  ROOT fusion = f32[1024,1024,1024] fusion(p0), kind=kLoop, calls=transpose
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<VerifiedHloModule> module,
+      ParseAndReturnVerifiedModule(transpose_fusion_module));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> optimized_module,
+                          GetOptimizedModule(std::move(module)));
+
+  if (cc.IsAtLeastAmpere()) {
+    EXPECT_TRUE(HasBlockLevelFusionConfig(
+        optimized_module->entry_computation()->root_instruction()));
+  } else {
+    EXPECT_FALSE(HasBlockLevelFusionConfig(
+        optimized_module->entry_computation()->root_instruction()));
+  }
+}
+
+TEST_F(
+    GpuCompilerTest,
+    FusionBlockLevelRewriterRewritesKLoopTransposeWithBitcastIfTheSmallMinorDimIsAPowerOfTwo) {  // NOLINT(whitespace/line_length)
+  auto cc = backend()
+                .default_stream_executor()
+                ->GetDeviceDescription()
+                .cuda_compute_capability();
+  if (!cc.IsAtLeastAmpere()) {
+    GTEST_SKIP() << "FusionBlockLevelRewriter requires Ampere+ to run.";
+  }
+
+  // If this test starts failing, then it's likely that this no longer generates
+  // a kLoop transpose. That's great---it probably means the rewrite in question
+  // is no longer necessary!
+  //
+  // The small minor dimension here is a power of two, so the rewrite should
+  // succeed.
+  constexpr absl::string_view rewritable_transpose_string = R"(
+ENTRY main {
+  p0 = f32[1024,4096]{1,0} parameter(0)
+  reshape = f32[1024,1024,4]{2,1,0} reshape(p0)
+  ROOT transpose = f32[4,1024,1024]{2,1,0} transpose(reshape), dimensions={2,1,0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<VerifiedHloModule> rewritable_transpose_module,
+      ParseAndReturnVerifiedModule(rewritable_transpose_string));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<HloModule> rewritable_transpose_optimized_module,
+      GetOptimizedModule(std::move(rewritable_transpose_module)));
+  EXPECT_TRUE(HasBlockLevelFusionConfig(
+      rewritable_transpose_optimized_module->entry_computation()
+          ->root_instruction()));
+
+  // The small minor dimension here is not a power of two, so the rewrite should
+  // fail.
+  constexpr absl::string_view unrewritable_transpose_string = R"(
+ENTRY main {
+  p0 = f32[1024,6144]{1,0} parameter(0)
+  reshape = f32[1024,1024,6]{2,1,0} reshape(p0)
+  ROOT transpose = f32[6,1024,1024]{2,1,0} transpose(reshape), dimensions={2,1,0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<VerifiedHloModule> unrewritable_transpose_module,
+      ParseAndReturnVerifiedModule(unrewritable_transpose_string));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<HloModule> unrewritable_transpose_optimized_module,
+      GetOptimizedModule(std::move(unrewritable_transpose_module)));
+  EXPECT_FALSE(HasBlockLevelFusionConfig(
+      unrewritable_transpose_optimized_module->entry_computation()
+          ->root_instruction()));
+}
+
+using GpuCompilerPassTest = GpuCompilerTest;
+
+TEST_F(GpuCompilerPassTest,
+       GpuCompilerRunsTritonGemmRewriterByDefaultFromAmpere) {
+  if (std::holds_alternative<se::RocmComputeCapability>(GpuComputeComp())) {
+    GTEST_SKIP() << "TritonGemmRewriter disabled for ROCm until autotuner "
+                 << "is included.";
+  }
+  auto cc = backend()
+                .default_stream_executor()
+                ->GetDeviceDescription()
+                .cuda_compute_capability();
+
+  bool is_rocm = std::holds_alternative<stream_executor::RocmComputeCapability>(
+      backend()
+          .default_stream_executor()
+          ->GetDeviceDescription()
+          .gpu_compute_capability());
+
+  bool expect_triton_gemm_rewriter_has_run = cc.IsAtLeastAmpere() || is_rocm;
 
   constexpr absl::string_view constant_module = R"(
 HloModule noop
@@ -1000,6 +1119,135 @@ ENTRY main {
   }
 
   EXPECT_EQ(triton_gemm_rewriter_has_run, expect_triton_gemm_rewriter_has_run);
+}
+
+TEST_F(GpuCompilerPassTest,
+       GpuCompilerRunsCustomKernelFusionByDefaultFromVolta) {
+  auto cc = backend()
+                .default_stream_executor()
+                ->GetDeviceDescription()
+                .cuda_compute_capability();
+
+  bool expect_custom_kernel_fusion_rewriter_has_run =
+      cc.major == se::CudaComputeCapability::VOLTA;
+
+  constexpr absl::string_view constant_module = R"(
+HloModule noop
+
+ENTRY main {
+  ROOT constant = f32[] constant(0)
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(constant_module));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> optimized_module,
+                          GetOptimizedModule(std::move(module)));
+  const HloModuleMetadataProto& module_metadata =
+      optimized_module->metadata()->proto();
+
+  bool custom_kernel_fusion_rewriter_has_run = false;
+  for (const HloPassMetadata& pass_metadata : module_metadata.pass_metadata()) {
+    custom_kernel_fusion_rewriter_has_run |=
+        pass_metadata.pass_name() == "custom-kernel-fusion-rewriter";
+  }
+
+  EXPECT_EQ(custom_kernel_fusion_rewriter_has_run,
+            expect_custom_kernel_fusion_rewriter_has_run);
+}
+
+class PassOrderTest : public GpuCompilerTest {
+ public:
+  void SetDebugOptions(const DebugOptions& options) {
+    HloModuleConfig config = GetModuleConfigForTest();
+    config.set_debug_options(options);
+    CompileModule(config);
+  }
+
+  // Fails if any of the passes with names matching the regular expression
+  // first_pass_regex run after any of the passes matching last_pass_regex or if
+  // none of the executed passes matches first_pass_regex or last_pass_regex.
+  void VerifyPassOrder(absl::string_view first_pass_regex,
+                       absl::string_view last_pass_regex) {
+    if (!optimized_module_) {
+      CompileModule(GetModuleConfigForTest());
+    }
+    int first_pass_latest_run = -1;
+    int last_pass_earliest_run = std::numeric_limits<int>::max();
+    int run_index = 0;
+    for (const HloPassMetadata& pass_metadata :
+         optimized_module_->metadata()->proto().pass_metadata()) {
+      if (RE2::FullMatch(pass_metadata.pass_name(), first_pass_regex)) {
+        VLOG(2) << "Pass " << pass_metadata.pass_name()
+                << " matches first_pass_regex." << std::endl;
+        first_pass_latest_run = std::max(first_pass_latest_run, run_index);
+      }
+      if (RE2::FullMatch(pass_metadata.pass_name(), last_pass_regex)) {
+        VLOG(2) << "Pass " << pass_metadata.pass_name()
+                << " matches last_pass_regex." << std::endl;
+        last_pass_earliest_run = std::min(last_pass_earliest_run, run_index);
+      }
+      ++run_index;
+    }
+
+    EXPECT_GT(first_pass_latest_run, -1)
+        << "Did not run a pass matching " << first_pass_regex;
+    EXPECT_LT(last_pass_earliest_run, std::numeric_limits<int>::max())
+        << "Did not run a pass matching " << last_pass_regex;
+    EXPECT_LE(first_pass_latest_run, last_pass_earliest_run)
+        << "One or more passes matching " << first_pass_regex
+        << " ran after passes matching " << last_pass_regex;
+  }
+
+ private:
+  void CompileModule(const HloModuleConfig& config) {
+    constexpr absl::string_view constant_module = R"(
+ENTRY main {
+  ROOT constant = f32[] constant(0)
+})";
+    TF_ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<VerifiedHloModule> module,
+        ParseAndReturnVerifiedModule(constant_module, config));
+    TF_ASSERT_OK_AND_ASSIGN(optimized_module_,
+                            GetOptimizedModule(std::move(module)));
+  }
+
+  std::unique_ptr<HloModule> optimized_module_;
+};
+
+TEST_F(PassOrderTest, PassesAreRunInCorrectOrder) {
+  VerifyPassOrder(/*first_pass_regex=*/"layout-assignment",
+                  /*last_pass_regex=*/"priority-fusion");
+  VerifyPassOrder(/*first_pass_regex=*/"layout-assignment",
+                  /*last_pass_regex=*/"layout_normalization");
+  VerifyPassOrder(/*first_pass_regex=*/"host-offload-legalize",
+                  /*last_pass_regex=*/"layout_normalization");
+}
+
+TEST_F(PassOrderTest, FusionBlockLevelRewriterRunsAfterAllFusionPasses) {
+  auto cc = backend()
+                .default_stream_executor()
+                ->GetDeviceDescription()
+                .cuda_compute_capability();
+  if (!cc.IsAtLeastAmpere()) {
+    GTEST_SKIP() << "FusionBlockLevelRewriter requires Ampere+ to run.";
+  }
+
+  DebugOptions debug_options = GetDebugOptionsForTest();
+  debug_options.set_xla_gpu_experimental_enable_fusion_block_level_rewriter(
+      true);
+  SetDebugOptions(debug_options);
+
+  VerifyPassOrder(/*first_pass_regex=*/".*fusion.*",
+                  /*last_pass_regex=*/"fusion-block-level-rewriter");
+}
+
+TEST_F(PassOrderTest, CollectivePipelinerRunsAfterCollectiveQuantizer) {
+  DebugOptions options = GetDebugOptionsForTest();
+  options.set_xla_gpu_enable_pipelined_collectives(true);
+  SetDebugOptions(options);
+
+  VerifyPassOrder(/*first_pass_regex=*/"collective-quantizer",
+                  /*last_pass_regex=*/"collective-pipeliner.*");
 }
 
 }  // namespace
