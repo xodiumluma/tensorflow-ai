@@ -87,10 +87,10 @@ limitations under the License.
 #include "xla/service/llvm_ir/tuple_ops.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/lib/math/math_util.h"
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/math/math_util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
@@ -109,11 +109,21 @@ using llvm_ir::SetToFirstInsertPoint;
 
 namespace cpu {
 
+bool IsNativeConvertSupportedOnTargetCPU(std::string feature_string) {
+  return (absl::StrContains(feature_string, "+avxneconvert") ||
+          absl::StrContains(feature_string, "+amx-bf16"));
+}
+
 class IrEmitter::CpuElementalIrEmitter : public ElementalIrEmitter {
  public:
   CpuElementalIrEmitter(const HloModuleConfig& module_config,
                         IrEmitter* ir_emitter, llvm::Module* module)
-      : ElementalIrEmitter(module, ir_emitter->b()),
+      : ElementalIrEmitter(
+            module, ir_emitter->b(),
+            Options{/*xla_cpu_use_truncate_f32_to_bf16_conversion=*/
+                    !IsNativeConvertSupportedOnTargetCPU(
+                        ir_emitter->target_machine_features_
+                            .get_target_feature_string())}),
         hlo_module_config_(module_config),
         ir_emitter_(ir_emitter) {}
 
@@ -448,6 +458,18 @@ void IrEmitter::AttachDereferenceableMetadataForLoad(llvm::LoadInst* load,
                                                      int64_t buffer_size) {
   if (buffer_size > 0) {
     llvm_ir::SetDereferenceableMetadataForLoad(load, buffer_size);
+  }
+}
+
+void IrEmitter::AttachInvariantLoadMetadataForLoad(llvm::LoadInst* load) const {
+  AttachInvariantLoadMetadataForLoad(load, hlo_module_config_);
+}
+
+/*static*/ void IrEmitter::AttachInvariantLoadMetadataForLoad(
+    llvm::LoadInst* load, const HloModuleConfig& config) {
+  if (config.debug_options().xla_llvm_enable_invariant_load_metadata()) {
+    load->setMetadata(llvm::LLVMContext::MD_invariant_load,
+                      llvm::MDNode::get(load->getContext(), /*MDs=*/{}));
   }
 }
 
@@ -3822,12 +3844,13 @@ llvm::Value* IrEmitter::ProfilingState::ReadCycleCounter(llvm::IRBuilder<>* b) {
   llvm::Module* module = b->GetInsertBlock()->getModule();
   if (!use_rdtscp_) {
     llvm::Function* func_llvm_readcyclecounter =
-        llvm::Intrinsic::getDeclaration(module,
-                                        llvm::Intrinsic::readcyclecounter);
+        llvm::Intrinsic::getOrInsertDeclaration(
+            module, llvm::Intrinsic::readcyclecounter);
     return b->CreateCall(func_llvm_readcyclecounter);
   }
   llvm::Function* func_llvm_x86_rdtscp =
-      llvm::Intrinsic::getDeclaration(module, llvm::Intrinsic::x86_rdtscp);
+      llvm::Intrinsic::getOrInsertDeclaration(module,
+                                              llvm::Intrinsic::x86_rdtscp);
   llvm::Value* rdtscp_call = b->CreateCall(func_llvm_x86_rdtscp);
   return b->CreateExtractValue(rdtscp_call, {0});
 }
@@ -4073,12 +4096,8 @@ llvm::Value* IrEmitter::EmitGlobalBufferPointer(
       GetBufferTableArgument(), b()->getPtrTy(), slice.index(), b());
   llvm::LoadInst* tempbuf_address_base =
       Load(b()->getPtrTy(), tempbuf_address_ptr);
-  if (hlo_module_config_.debug_options()
-          .xla_llvm_enable_invariant_load_metadata()) {
-    tempbuf_address_base->setMetadata(
-        llvm::LLVMContext::MD_invariant_load,
-        llvm::MDNode::get(tempbuf_address_base->getContext(), /*MDs=*/{}));
-  }
+
+  AttachInvariantLoadMetadataForLoad(tempbuf_address_base);
   AttachAlignmentMetadataForLoad(tempbuf_address_base, allocation.size());
   AttachDereferenceableMetadataForLoad(tempbuf_address_base, allocation.size());
 

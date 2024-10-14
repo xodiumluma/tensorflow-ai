@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/resource_variable_ops.h"
 #include "tensorflow/cc/ops/state_ops.h"
 #include "tensorflow/cc/saved_model/loader.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/framework/function_testlib.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -35,7 +36,6 @@ limitations under the License.
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/public/session_options.h"
-#include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/errors.h"
 
 namespace tensorflow {
@@ -81,7 +81,7 @@ class FreezeTest : public ::testing::Test {
       return saved_model_bundle->session->Run(
           /* inputs */ {}, /* output_tensors */ {}, {init_node}, &outputs);
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   // Adds `graph_def` to `saved_model_bundle` and initializes a session with

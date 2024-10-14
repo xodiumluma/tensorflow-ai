@@ -42,6 +42,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v2/graph_to_tf_executor.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v2/tf_executor_to_graph.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/function_optimization_registry.h"
@@ -237,8 +238,8 @@ Status MlirFunctionOptimizationPass::Run(
       tensorflow::metrics::GetGraphOptimizationCounter(),
       {kTfMlirCategory, "convert_graph_to_mlir"});
 
-  auto module_ref_status = ConvertGraphToMlir(**graph, debug_info, *flib_def,
-                                              import_config, &context);
+  auto module_ref_status = tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
+      **graph, debug_info, *flib_def, import_config, &context);
   mlir_function_pass_graph_conversion_count
       ->GetCell(absl::StatusCodeToString(module_ref_status.status().code()))
       ->IncrementBy(1);
@@ -360,7 +361,7 @@ Status MlirFunctionOptimizationPass::Run(
   timings.Reset({kTfMlirCategory, "convert_mlir_to_graph"});
   // Some or all passes are enabled. Convert MLIR module and return back
   // resulted graph.
-  Status status = tensorflow::tf2xla::v2::ConvertMlirToGraph(
+  Status status = tensorflow::tf2xla::v2::ConvertTfExecutorToGraph(
       *module_ref, export_config, graph, flib_def, &control_ret_nodes);
   if (!status.ok()) {
     errors::AppendToMessage(&status,
@@ -476,10 +477,11 @@ Status MlirV1CompatGraphOptimizationPass::Run(
 
   GraphExportConfig export_config;
   absl::flat_hash_set<Node*> control_ret_nodes;
-  TF_RETURN_WITH_CONTEXT_IF_ERROR(tensorflow::tf2xla::v2::ConvertMlirToGraph(
-                                      *module_ref, export_config, options.graph,
-                                      options.flib_def, &control_ret_nodes),
-                                  "Error converting MLIR module back to graph");
+  TF_RETURN_WITH_CONTEXT_IF_ERROR(
+      tensorflow::tf2xla::v2::ConvertTfExecutorToGraph(
+          *module_ref, export_config, options.graph, options.flib_def,
+          &control_ret_nodes),
+      "Error converting MLIR module back to graph");
 
   return absl::OkStatus();
 }

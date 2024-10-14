@@ -49,10 +49,7 @@ Platform::Id SyclPlatform::id() const { return sycl::kSyclPlatformId; }
 
 int SyclPlatform::VisibleDeviceCount() const {
   // Initialized in a thread-safe manner the first time this is run.
-  static const int num_devices = [] {
-    if (!GpuDriver::Init().ok()) return -1;
-    return GpuDriver::GetDeviceCount();
-  }();
+  static const int num_devices = [] { return GpuDriver::GetDeviceCount(); }();
   return num_devices;
 }
 
@@ -64,26 +61,13 @@ SyclPlatform::DescriptionForDevice(int ordinal) const {
 }
 
 absl::StatusOr<StreamExecutor*> SyclPlatform::ExecutorForDevice(int ordinal) {
-  StreamExecutorConfig config;
-  config.ordinal = ordinal;
-  return GetExecutor(config);
-}
-
-absl::StatusOr<StreamExecutor*> SyclPlatform::GetExecutor(
-    const StreamExecutorConfig& config) {
-  if (config.gpu_stream) {
-    // If the GPU stream was provided, it's not possible to get-or-create a
-    // stream with a required pointer: so we are looking for previously
-    // allocated streams.
-    return executor_cache_.Get(config);
-  }
   return executor_cache_.GetOrCreate(
-      config, [&]() { return GetUncachedExecutor(config); });
+      ordinal, [this, ordinal]() { return GetUncachedExecutor(ordinal); });
 }
 
 absl::StatusOr<std::unique_ptr<StreamExecutor>>
-SyclPlatform::GetUncachedExecutor(const StreamExecutorConfig& config) {
-  auto executor = std::make_unique<GpuExecutor>(this, config.ordinal);
+SyclPlatform::GetUncachedExecutor(int ordinal {
+  auto executor = std::make_unique<GpuExecutor>(this, ordinal);
   TF_RETURN_IF_ERROR(executor->Init());
   return std::move(executor);
 }

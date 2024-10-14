@@ -485,9 +485,6 @@ class HybridFullyConnectedOpModel : public SingleOpModel {
     PerChannelSymmetricQuantizeAndPopulate(weights_, f);
   }
 
-  void SetSignedWeights4Bit(std::initializer_list<float> f) {
-    SignedSymmetricQuantizeAndPopulate4Bit(weights_, f);
-  }
 
   void SetInput(const std::vector<float>& f) { PopulateTensor(input_, f); }
   std::vector<float> GetOutput() { return ExtractVector<float>(output_); }
@@ -1374,7 +1371,7 @@ TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedUint8) {
                                      24, 25, 26,  //
                                      58, 59, 60,  //
                                  },
-                                 /*max_abs_error=*/1.3f)));
+                                 /*max_abs_err=*/1.3f)));
 }
 
 TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt8) {
@@ -1402,7 +1399,7 @@ TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt8) {
                                      24, 25, 26,  //
                                      58, 59, 60,  //
                                  },
-                                 /*max_abs_error=*/1.3f)));
+                                 /*max_abs_err=*/1.3f)));
 }
 
 TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt8MultiThreaded) {
@@ -1439,7 +1436,7 @@ TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt8MultiThreaded) {
                                        24, 25, 26,  //
                                        58, 59, 60,  //
                                    },
-                                   /*max_abs_error=*/1.3f)));
+                                   /*max_abs_err=*/1.3f)));
   }
 }
 
@@ -1470,7 +1467,7 @@ TEST(HybridAsymmetricInputFullyConnectedOpTest, SimpleTestQuantizedUint8) {
                                      24, 25, 26,  //
                                      58, 59, 60,  //
                                  },
-                                 /*max_abs_error=*/0.64f)));
+                                 /*max_abs_err=*/0.64f)));
 }
 
 TEST(HybridAsymmetricInputFullyConnectedOpTest, SimpleTestQuantizedInt8) {
@@ -1500,7 +1497,7 @@ TEST(HybridAsymmetricInputFullyConnectedOpTest, SimpleTestQuantizedInt8) {
                                      24, 25, 26,  //
                                      58, 59, 60,  //
                                  },
-                                 /*max_abs_error=*/1.3f)));
+                                 /*max_abs_err=*/1.3f)));
 }
 
 // The expected values for this test were obtained by running the test with the
@@ -1511,7 +1508,7 @@ TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt4) {
       /*input=*/{TensorType_FLOAT32, {2, 10}},
       /*weights=*/{TensorType_INT4, {3, 10}, 0, 0, 10.0 / 7.0, 0});  // Hybrid
 
-  m.SetSignedWeights4Bit({
+  m.SetSignedWeights({
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,  // u = 0
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,  // u = 1
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,  // u = 2
@@ -1530,7 +1527,7 @@ TEST(HybridFullyConnectedOpTest, SimpleTestQuantizedInt4) {
                                      36, 37, 38,  //
                                      52, 53, 54,  //
                                  },
-                                 /*max_abs_error=*/1.3f)));
+                                 /*max_abs_err=*/1.3f)));
 }
 
 TEST(HybridAsymmetricInputPerChannelWeightsFullyConnectedOpTest,
@@ -1570,7 +1567,7 @@ TEST(HybridAsymmetricInputPerChannelWeightsFullyConnectedOpTest,
                                      24, 195, 366,  //
                                      58, 251, 441,  //
                                  },
-                                 /*max_abs_error=*/1.3f)));
+                                 /*max_abs_err=*/1.3f)));
 }
 
 TEST_P(FloatFullyConnectedOpTest, SimpleTest4DInput) {
